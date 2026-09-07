@@ -15,11 +15,12 @@ No unreleased changes yet.
 
 ### Added
 
-- Fresh-project syncs now classify reconstructable Git commits and diffs, tracked Markdown,
-  available shell history, and already-supported opt-in coding-agent history as `backfilled`
-  when their source artifacts predate NexusMem initialization. Later events are `observed`;
-  upgraded rows that cannot be classified remain `unknown`. Retrieval exposes this origin
-  alongside the existing evidence provenance.
+- Fresh-project syncs classify reconstructable Git commits and diffs, timestamped shell history,
+  and already-supported opt-in coding-agent history as `backfilled` only when a trustworthy source
+  timestamp predates NexusMem initialization. Trustworthily timestamped events between initialization
+  and sync time are `observed`. Tracked Markdown, untimestamped shell history, and other records that
+  cannot be classified remain `unknown`. Retrieval exposes this origin alongside the existing evidence
+  provenance.
 
 ### Changed
 
