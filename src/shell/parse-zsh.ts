@@ -10,11 +10,10 @@ const EXTENDED_PREFIX = /^: (\d+):(\d+);(.*)$/;
  *
  * Handles the (very common, oh-my-zsh-default) extended-history format with
  * real epoch timestamps, and its backslash-continuation convention for
- * commands typed across multiple physical lines. Falls back to the same
- * backward-from-mtime approximation as PSReadLine when extended history is
- * off.
+ * commands typed across multiple physical lines. When extended history is
+ * off, the timestamp remains unknown rather than being inferred.
  */
-export function parseZshHistory(raw: string, mtimeMs: number, opts: ScrapeOptions = {}): RawShellEntry[] {
+export function parseZshHistory(raw: string, _mtimeMs: number, opts: ScrapeOptions = {}): RawShellEntry[] {
   const rawLines = raw.split(/\r?\n/);
   const prelim: Array<{ command: string; ts: string | null; durationMs: number | null }> = [];
 
@@ -53,12 +52,11 @@ export function parseZshHistory(raw: string, mtimeMs: number, opts: ScrapeOption
   const startIndex = prelim.length - tail.length;
 
   return tail.map((p, idx) => {
-    const fromEnd = tail.length - 1 - idx;
     const approx = p.ts === null;
     return {
       naturalKey: `zsh:${startIndex + idx}:${sha256Hex(p.command).slice(0, 12)}`,
       command: p.command,
-      ts: p.ts ?? new Date(mtimeMs - fromEnd * 1000).toISOString(),
+      ts: p.ts,
       tsApprox: approx,
       exitCode: null,
       cwd: null,

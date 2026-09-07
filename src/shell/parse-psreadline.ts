@@ -14,20 +14,16 @@ export interface ScrapeOptions {
  * not reconstructed; each physical line is treated as its own command. Good
  * enough for the common one-liner case, which is nearly all shell history.
  */
-export function parsePsReadLineHistory(raw: string, mtimeMs: number, opts: ScrapeOptions = {}): RawShellEntry[] {
+export function parsePsReadLineHistory(raw: string, _mtimeMs: number, opts: ScrapeOptions = {}): RawShellEntry[] {
   const allLines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
   const tail = opts.tailLines ? allLines.slice(-opts.tailLines) : allLines;
   const startIndex = allLines.length - tail.length;
 
   return tail.map((command, i) => {
-    // No per-line timestamp exists, so space entries backward from the
-    // file's mtime, one synthetic second apart -- preserves order and keeps
-    // recency ranking roughly sane without ever being presented as exact.
-    const fromEnd = tail.length - 1 - i;
     return {
       naturalKey: `pwsh:${startIndex + i}:${sha256Hex(command).slice(0, 12)}`,
       command,
-      ts: new Date(mtimeMs - fromEnd * 1000).toISOString(),
+      ts: null,
       tsApprox: true,
       exitCode: null,
       cwd: null,

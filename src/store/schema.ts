@@ -321,6 +321,22 @@ ALTER TABLE nodes ADD COLUMN retrieved_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE nodes ADD COLUMN last_retrieved_at INTEGER;
 `;
 
+// The evidence-quality axis (`provenance`) cannot also say whether NexusMem
+// saw an event happen or reconstructed it from an artifact that already
+// existed at installation. Keep that as a separate field. `source_ts` is
+// nullable specifically for shell histories that do not record timestamps;
+// their legacy synthetic `ts` remains only as an internal ordering value.
+const V13 = `
+ALTER TABLE nodes ADD COLUMN capture_mode TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE nodes ADD COLUMN source_ts TEXT;
+
+UPDATE nodes
+SET source_ts = CASE
+  WHEN kind = 'shell_command' AND json_extract(meta, '$.tsApprox') = 1 THEN NULL
+  ELSE ts
+END;
+`;
+
 interface Migration {
   version: number;
   up: (db: Database) => void;
@@ -340,6 +356,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 10, up: (db) => db.exec(V10) },
   { version: 11, up: (db) => db.exec(V11) },
   { version: 12, up: (db) => db.exec(V12) },
+  { version: 13, up: (db) => db.exec(V13) },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

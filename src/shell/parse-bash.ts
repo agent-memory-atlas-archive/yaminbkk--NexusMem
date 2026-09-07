@@ -9,9 +9,9 @@ const EPOCH_COMMENT = /^#(\d{9,10})$/;
  * Parse `.bash_history`.
  *
  * Real timestamps are used when present (`HISTTIMEFORMAT` is set); otherwise
- * falls back to the same backward-from-mtime approximation as PSReadLine.
+ * the timestamp remains unknown rather than being inferred from file mtime.
  */
-export function parseBashHistory(raw: string, mtimeMs: number, opts: ScrapeOptions = {}): RawShellEntry[] {
+export function parseBashHistory(raw: string, _mtimeMs: number, opts: ScrapeOptions = {}): RawShellEntry[] {
   const lines = raw.split(/\r?\n/);
 
   const prelim: Array<{ command: string; ts: string | null }> = [];
@@ -34,12 +34,11 @@ export function parseBashHistory(raw: string, mtimeMs: number, opts: ScrapeOptio
   const startIndex = prelim.length - tail.length;
 
   return tail.map((p, i) => {
-    const fromEnd = tail.length - 1 - i;
     const approx = p.ts === null;
     return {
       naturalKey: `bash:${startIndex + i}:${sha256Hex(p.command).slice(0, 12)}`,
       command: p.command,
-      ts: p.ts ?? new Date(mtimeMs - fromEnd * 1000).toISOString(),
+      ts: p.ts,
       tsApprox: approx,
       exitCode: null,
       cwd: null,

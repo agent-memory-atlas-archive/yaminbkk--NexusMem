@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import { defaultProvenanceForKind, type MemoryNode, type NodeKind, type Provenance, type TrustState } from '../core/types.js';
+import { defaultProvenanceForKind, type CaptureMode, type MemoryNode, type NodeKind, type Provenance, type TrustState } from '../core/types.js';
 import { firstMatchingEntry, listDenyListEntries, type DenyListEntry } from './deny-list.js';
 
 export interface IngestStats {
@@ -20,6 +20,8 @@ export interface LinkedNode {
   body: string;
   signal: number;
   provenance: Provenance;
+  captureMode: CaptureMode;
+  sourceTs: string | null;
   trustState: TrustState;
 }
 
@@ -32,6 +34,8 @@ export interface RecentNode {
   title: string;
   signal: number;
   provenance: Provenance;
+  captureMode: CaptureMode;
+  sourceTs: string | null;
 }
 
 function epochOf(ts: string): number {
@@ -47,7 +51,8 @@ function epochOf(ts: string): number {
  * happens when scoring or body composition is improved between releases).
  */
 export function upsertNodes(db: Database, nodes: readonly MemoryNode[]): IngestStats {
-  const exists = db.prepare('SELECT body, signal, title FROM nodes WHERE id = ?');
+  const exists = db.prepare('SELECT body, signal, title, capture_mode AS captureMode, source_ts AS sourceTs FROM nodes WHERE id = ?');
+  const projectCreatedAt = db.prepare('SELECT created_at AS createdAt FROM projects WHERE id = ?');
   // vec0 has no triggers to keep itself in sync (see schema.ts) -- when a
   // node's indexed text actually changes, its old embedding is stale and
   // must be dropped so the embedding pass in vector/embed.ts re-embeds it.
@@ -55,12 +60,12 @@ export function upsertNodes(db: Database, nodes: readonly MemoryNode[]): IngestS
   // `supersedes` is deliberately absent from the ON CONFLICT SET clause: it's
   // set out-of-band by `nexusmem mark-stale` and a re-sync must not wipe it.
   const insertNode = db.prepare(
-    `INSERT INTO nodes (id, kind, project_id, ts, ts_epoch, source, title, body, signal, meta, provenance, supersedes, created_at)
-     VALUES (@id, @kind, @projectId, @ts, @tsEpoch, @source, @title, @body, @signal, @meta, @provenance, @supersedes, @now)
+    `INSERT INTO nodes (id, kind, project_id, ts, ts_epoch, source, title, body, signal, meta, provenance, supersedes, created_at, capture_mode, source_ts)
+     VALUES (@id, @kind, @projectId, @ts, @tsEpoch, @source, @title, @body, @signal, @meta, @provenance, @supersedes, @now, @captureMode, @sourceTs)
      ON CONFLICT(id) DO UPDATE SET
        ts = excluded.ts, ts_epoch = excluded.ts_epoch, source = excluded.source,
        title = excluded.title, body = excluded.body, signal = excluded.signal, meta = excluded.meta,
-       provenance = excluded.provenance`,
+       provenance = excluded.provenance, capture_mode = excluded.capture_mode, source_ts = excluded.source_ts`,
   );
   const clearFiles = db.prepare('DELETE FROM node_files WHERE node_id = ?');
   const insertFile = db.prepare(
@@ -76,6 +81,7 @@ export function upsertNodes(db: Database, nodes: readonly MemoryNode[]): IngestS
   // batch is almost always a single project's sync, so this is one query
   // in practice, not N.
   const denyEntriesByProject = new Map<string, DenyListEntry[]>();
+  const createdAtByProject = new Map<string, number | null>();
 
   const run = db.transaction((batch: readonly MemoryNode[]) => {
     const now = Date.now();
@@ -91,10 +97,25 @@ export function upsertNodes(db: Database, nodes: readonly MemoryNode[]): IngestS
         continue;
       }
 
-      const prior = exists.get(node.id) as { body: string; signal: number; title: string } | undefined;
+      let initializedAt = createdAtByProject.get(node.projectId);
+      if (initializedAt === undefined) {
+        initializedAt = (projectCreatedAt.get(node.projectId) as { createdAt: number } | undefined)?.createdAt ?? null;
+        createdAtByProject.set(node.projectId, initializedAt);
+      }
+      const sourceTs = node.sourceTs === undefined ? node.ts : node.sourceTs;
+      const sourceEpoch = sourceTs === null ? Number.NaN : Date.parse(sourceTs);
+      const captureMode: CaptureMode = node.captureMode ?? (
+        sourceTs === null
+          ? (node.kind === 'shell_command' && !node.source.endsWith('-hook') ? 'backfilled' : 'unknown')
+          : initializedAt !== null && !Number.isNaN(sourceEpoch)
+            ? (sourceEpoch < initializedAt ? 'backfilled' : 'observed')
+            : 'unknown'
+      );
+
+      const prior = exists.get(node.id) as { body: string; signal: number; title: string; captureMode: CaptureMode; sourceTs: string | null } | undefined;
 
       if (prior) {
-        if (prior.body === node.body && prior.signal === node.signal && prior.title === node.title) {
+        if (prior.body === node.body && prior.signal === node.signal && prior.title === node.title && prior.captureMode === captureMode && prior.sourceTs === sourceTs) {
           stats.unchanged += 1;
           continue;
         }
@@ -116,6 +137,8 @@ export function upsertNodes(db: Database, nodes: readonly MemoryNode[]): IngestS
         signal: node.signal,
         meta: JSON.stringify(node.meta),
         provenance: node.provenance ?? defaultProvenanceForKind(node.kind),
+        captureMode,
+        sourceTs,
         supersedes: node.supersedes ?? null,
         now,
       });
@@ -178,7 +201,8 @@ export function getNodesByIds(db: Database, ids: readonly string[]): LinkedNode[
   if (ids.length === 0) return [];
   return db
     .prepare(
-      `SELECT id, kind, project_id AS projectId, ts, title, body, signal, provenance, trust_state AS trustState
+      `SELECT id, kind, project_id AS projectId, ts, source_ts AS sourceTs, title, body, signal, provenance,
+              capture_mode AS captureMode, trust_state AS trustState
        FROM nodes WHERE id IN (SELECT value FROM json_each(?))`,
     )
     .all(JSON.stringify(ids)) as LinkedNode[];
@@ -193,7 +217,7 @@ export function getNodesByIds(db: Database, ids: readonly string[]): LinkedNode[
 export function listRecentNodes(db: Database, projectId: string, limit = 20): RecentNode[] {
   return db
     .prepare(
-      `SELECT id, kind, ts, source, title, signal, provenance
+      `SELECT id, kind, ts, source_ts AS sourceTs, source, title, signal, provenance, capture_mode AS captureMode
        FROM nodes
        WHERE project_id = ?
        ORDER BY ts_epoch DESC

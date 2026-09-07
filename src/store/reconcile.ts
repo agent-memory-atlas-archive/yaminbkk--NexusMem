@@ -15,6 +15,8 @@ interface StoredNodeRow {
   signal: number;
   meta: string;
   created_at: number;
+  capture_mode: string;
+  source_ts: string | null;
 }
 
 interface StoredFileRow {
@@ -56,8 +58,8 @@ function recomputeByNaturalKey(
 
   const nodeExists = db.prepare('SELECT 1 FROM nodes WHERE id = ?');
   const insertNode = db.prepare(
-    `INSERT INTO nodes (id, kind, project_id, ts, ts_epoch, source, title, body, signal, meta, created_at)
-     VALUES (@id, @kind, @projectId, @ts, @tsEpoch, @source, @title, @body, @signal, @meta, @createdAt)`,
+    `INSERT INTO nodes (id, kind, project_id, ts, ts_epoch, source, title, body, signal, meta, created_at, capture_mode, source_ts)
+     VALUES (@id, @kind, @projectId, @ts, @tsEpoch, @source, @title, @body, @signal, @meta, @createdAt, @captureMode, @sourceTs)`,
   );
   const readFiles = db.prepare('SELECT path, previous_path, insertions, deletions, is_binary FROM node_files WHERE node_id = ?');
   const insertFile = db.prepare(
@@ -111,6 +113,8 @@ function recomputeByNaturalKey(
         signal: row.signal,
         meta: row.meta,
         createdAt: row.created_at,
+        captureMode: row.capture_mode,
+        sourceTs: row.source_ts,
       });
       for (const file of readFiles.all(row.id) as StoredFileRow[]) {
         insertFile.run({

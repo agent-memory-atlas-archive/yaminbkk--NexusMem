@@ -175,15 +175,19 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
       `SELECT id, ts_epoch, json_extract(meta, '$.command') AS command, json_extract(meta, '$.cwd') AS cwd
        FROM nodes
        WHERE project_id = ? AND kind = 'shell_command'
+         AND source_ts IS NOT NULL
          AND json_extract(meta, '$.exitCode') IS NOT NULL
-         AND json_extract(meta, '$.exitCode') != 0`,
+         AND json_extract(meta, '$.exitCode') != 0
+         AND json_extract(meta, '$.cwd') IS NOT NULL`,
     )
     .all(projectId) as FailureRow[];
 
   const findRetry = db.prepare(
     `SELECT id FROM nodes
      WHERE project_id = ? AND kind = 'shell_command'
+       AND source_ts IS NOT NULL
        AND json_extract(meta, '$.exitCode') = 0
+       AND json_extract(meta, '$.cwd') IS NOT NULL
        AND ts_epoch > ? AND ts_epoch <= ?
        AND lower(trim(json_extract(meta, '$.command'))) = ?
        AND (json_extract(meta, '$.cwd') IS ? OR json_extract(meta, '$.cwd') = ?)

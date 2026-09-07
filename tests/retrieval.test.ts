@@ -383,6 +383,19 @@ describe('renderContextBlock', () => {
     expect(block).toContain('[derived]');
   });
 
+  it('labels backfilled records and does not print a fabricated date when the source timestamp is unknown', () => {
+    const historical = ranked({
+      id: 'historical',
+      title: 'npm test',
+      captureMode: 'backfilled',
+      sourceTs: null,
+    });
+    const block = renderContextBlock('test', packContext([historical], 2000));
+    expect(block).toContain('[backfilled]');
+    expect(block).toContain('date unknown');
+    expect(block).not.toContain(historical.ts.slice(0, 10));
+  });
+
   it('tags a reviewed node with its trust_state verdict, but stays silent for the untouched default', () => {
     const candidate = ranked({ id: 'a', title: 'never reviewed', trustState: 'candidate' });
     const rejected = ranked({ id: 'b', title: 'human said no', trustState: 'rejected' });

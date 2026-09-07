@@ -230,4 +230,35 @@ describe('migrate (V5 -> V6 provenance backfill against real pre-existing data)'
 
     db.close();
   });
+
+  it('adds bootstrap origin and preserves unknown legacy shell timestamps as null (V12 -> V13)', () => {
+    const db = new Database(dbPath);
+    db.pragma('foreign_keys = ON');
+    sqliteVec.load(db);
+
+    for (const m of MIGRATIONS) {
+      if (m.version > 12) continue;
+      db.transaction(() => {
+        m.up(db);
+        db.pragma(`user_version = ${m.version}`);
+      })();
+    }
+
+    const insert = db.prepare(`
+      INSERT INTO nodes (id, kind, project_id, ts, ts_epoch, source, title, body, signal, meta, provenance, created_at)
+      VALUES (@id, @kind, 'proj-a', @ts, 1, @source, 't', 'b', 0.5, @meta, 'observed', 1)
+    `);
+    insert.run({ id: 'git', kind: 'git_commit', ts: '2020-01-01T00:00:00Z', source: 'git', meta: '{}' });
+    insert.run({ id: 'shell', kind: 'shell_command', ts: '2020-01-02T00:00:00Z', source: 'shell:pwsh', meta: '{"tsApprox":true}' });
+
+    const result = migrate(db);
+    expect(result.from).toBe(12);
+    expect(result.to).toBe(13);
+    const rows = db.prepare('SELECT id, capture_mode AS captureMode, source_ts AS sourceTs FROM nodes ORDER BY id').all();
+    expect(rows).toEqual([
+      { id: 'git', captureMode: 'unknown', sourceTs: '2020-01-01T00:00:00Z' },
+      { id: 'shell', captureMode: 'unknown', sourceTs: null },
+    ]);
+    db.close();
+  });
 });

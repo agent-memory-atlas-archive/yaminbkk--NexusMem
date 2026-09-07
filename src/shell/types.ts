@@ -19,8 +19,9 @@ export interface RawShellEntry {
    */
   naturalKey: string;
   command: string;
-  /** ISO-8601. Real if `tsApprox` is false, synthesized (but ordered) otherwise. */
-  ts: string;
+  /** ISO-8601 from the history artifact, or null when that artifact records no timestamp. */
+  ts: string | null;
+  /** Legacy name: false means `ts` is exact; true now means the source timestamp is absent. */
   tsApprox: boolean;
   exitCode: number | null;
   cwd: string | null;

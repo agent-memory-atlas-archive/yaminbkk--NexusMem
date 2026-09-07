@@ -32,6 +32,9 @@ export type Provenance = 'observed' | 'authored' | 'recorded' | 'derived';
  */
 export type TrustState = 'candidate' | 'verified' | 'rejected';
 
+/** Whether the source artifact predates this project's NexusMem initialization. */
+export type CaptureMode = 'backfilled' | 'observed' | 'unknown';
+
 /** Fallback for nodes written without an explicit `provenance` (older callers, test fixtures). */
 export function defaultProvenanceForKind(kind: NodeKind): Provenance {
   switch (kind) {
@@ -69,8 +72,10 @@ export interface MemoryNode {
   kind: NodeKind;
   /** Stable identity of the repo this node belongs to. See `makeProjectId`. */
   projectId: string;
-  /** ISO-8601 with offset, taken from the event itself (never sync time). */
+  /** ISO-8601 ordering timestamp; source time when known, otherwise record time (see `sourceTs`). */
   ts: string;
+  /** Timestamp present in the source artifact; null means the source did not record one. */
+  sourceTs?: string | null;
   /** Provenance, e.g. `git`, `shell:pwsh`, `shell:zsh`. */
   source: string;
   /** One-line summary. Shown to the agent, and boosted in the search index. */
@@ -90,6 +95,8 @@ export interface MemoryNode {
   meta: Record<string, unknown>;
   /** Optional here so it can default via `defaultProvenanceForKind`; collectors set it explicitly. */
   provenance?: Provenance;
+  /** Historical bootstrap vs. an event observed after installation. Normally assigned by the store. */
+  captureMode?: CaptureMode;
   /** Id of an older node this one replaces. Down-weighted by the ranker, never deleted. Written by `nexusmem mark-stale`. */
   supersedes?: string | null;
 }

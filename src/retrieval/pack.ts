@@ -1,17 +1,19 @@
 import { approxTokens, truncate } from '../core/text.js';
-import type { Provenance, TrustState } from '../core/types.js';
+import type { CaptureMode, Provenance, TrustState } from '../core/types.js';
 import type { RankedHit } from './rank.js';
 
 export interface PackedNode {
   id: string;
   kind: string;
   ts: string;
+  sourceTs: string | null;
   title: string;
   signal: number;
   score: number;
   summary: string;
   tokens: number;
   provenance: Provenance;
+  captureMode: CaptureMode;
   trustState: TrustState;
   /** Set only for a cross-project query, where a line's repository is not implied by context. */
   project?: string;
@@ -246,12 +248,14 @@ export function packContext(
       id: hit.id,
       kind: hit.kind,
       ts: hit.ts,
+      sourceTs: hit.sourceTs === undefined ? hit.ts : hit.sourceTs,
       title: hit.title,
       signal: hit.signal,
       score: hit.score,
       summary,
       tokens,
       provenance: hit.provenance,
+      captureMode: hit.captureMode ?? 'unknown',
       trustState: hit.trustState,
       ...(hit.project ? { project: hit.project } : {}),
     });
@@ -275,9 +279,13 @@ export function renderContextBlock(query: string, result: PackResult): string {
     // repositories' conventions read as one contradictory history.
     const project = node.project ? `[${node.project}] ` : '';
     const provenance = `[${node.provenance}] `; // fact vs. inference, one glance
+    const captureLabel =
+      node.captureMode === 'observed' ? 'post-install' : node.captureMode === 'unknown' ? 'origin-unknown' : 'backfilled';
+    const capture = `[${captureLabel}] `;
     // Silent for the overwhelming default ('candidate'): only a reviewed node earns a tag.
     const trust = node.trustState !== 'candidate' ? `[${node.trustState}] ` : '';
-    lines.push(`- ${node.ts.slice(0, 10)} ${provenance}${trust}${project}${node.title}`);
+    const date = node.sourceTs === null ? 'date unknown' : node.sourceTs.slice(0, 10);
+    lines.push(`- ${date} ${provenance}${capture}${trust}${project}${node.title}`);
     if (node.summary && node.summary !== node.title) {
       // A patch is the one body whose line structure *is* the content:
       // flattened onto one line, `-  return a;` and `+  return b;` become an

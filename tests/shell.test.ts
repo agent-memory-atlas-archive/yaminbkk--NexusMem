@@ -19,11 +19,10 @@ describe('parsePsReadLineHistory', () => {
     expect(entries.map((e) => e.command)).toEqual(['git status', 'npm test']);
   });
 
-  it('marks every timestamp as approximate and orders them ascending toward mtime', () => {
+  it('keeps timestamps unknown instead of inferring them from file mtime', () => {
     const entries = parsePsReadLineHistory('a\nb\nc\n', MTIME);
     expect(entries.every((e) => e.tsApprox)).toBe(true);
-    expect(Date.parse(entries[0]!.ts)).toBeLessThan(Date.parse(entries[2]!.ts));
-    expect(entries[2]!.ts).toBe(new Date(MTIME).toISOString());
+    expect(entries.every((e) => e.ts === null)).toBe(true);
   });
 
   it('keeps only the tail window when requested, preserving absolute position in the id', () => {
@@ -50,9 +49,10 @@ describe('parseBashHistory', () => {
     expect(entries[1]!.ts).toBe(new Date(1700000100 * 1000).toISOString());
   });
 
-  it('falls back to mtime-derived timestamps without epoch comments', () => {
+  it('keeps timestamps null without epoch comments', () => {
     const entries = parseBashHistory('ls\ncd src\n', MTIME);
     expect(entries.every((e) => e.tsApprox)).toBe(true);
+    expect(entries.every((e) => e.ts === null)).toBe(true);
   });
 
   it('handles a mix of timestamped and untimestamped lines', () => {
@@ -84,6 +84,7 @@ describe('parseZshHistory', () => {
     const entries = parseZshHistory('npm run build\n', MTIME);
     expect(entries[0]!.command).toBe('npm run build');
     expect(entries[0]!.tsApprox).toBe(true);
+    expect(entries[0]!.ts).toBeNull();
   });
 });
 
@@ -168,6 +169,15 @@ describe('toMemoryNode (shell)', () => {
   it('omits the meta line entirely when nothing is known', () => {
     const bare: RawShellEntry = { ...entry, cwd: null, exitCode: null, durationMs: null };
     expect(toMemoryNode(bare, 'proj1').body).not.toContain('exit:');
+  });
+
+  it('stores a missing source timestamp as null rather than fabricating one', () => {
+    const node = toMemoryNode({ ...entry, ts: null, tsApprox: true }, 'proj1', {
+      recordedAt: '2026-08-09T00:00:00Z',
+    });
+    expect(node.ts).toBe('2026-08-09T00:00:00Z');
+    expect(node.sourceTs).toBeNull();
+    expect(node.meta.sourceTimestamp).toBeNull();
   });
 
   it('has no files, unlike a git commit node', () => {

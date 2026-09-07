@@ -11,6 +11,24 @@ built from, matched by publish timestamp: `v0.1.0` → `67a4776`, `v0.1.1` → `
 
 No unreleased changes yet.
 
+## [0.10.4] â€” 2026-09-07
+
+### Added
+
+- Fresh-project syncs now classify reconstructable Git commits and diffs, tracked Markdown,
+  available shell history, and already-supported opt-in coding-agent history as `backfilled`
+  when their source artifacts predate NexusMem initialization. Later events are `observed`;
+  upgraded rows that cannot be classified remain `unknown`. Retrieval exposes this origin
+  alongside the existing evidence provenance.
+
+### Changed
+
+- Historical shell entries no longer receive timestamps inferred from history-file mtimes.
+  Missing timestamp, cwd, exit code, and duration metadata remain null, and incomplete shell
+  evidence is excluded from failure-to-fix correlation.
+- Schema V13 adds `nodes.capture_mode` and nullable `nodes.source_ts`. Existing approximate
+  shell timestamps migrate to a null `source_ts`; other existing event timestamps are retained.
+
 ## [0.10.3] — 2026-08-31
 
 ### Added

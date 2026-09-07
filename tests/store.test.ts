@@ -597,6 +597,8 @@ describe('MemoryStore.listRecentNodes', () => {
         title: 'npm whoami',
         signal: 0.42,
         provenance: 'observed', // defaultProvenanceForKind: no explicit provenance was set on this fixture node
+        captureMode: 'unknown', // fixture omits a project row, so install time is genuinely unavailable
+        sourceTs: '2026-03-01T10:00:00+07:00',
       },
     ]);
   });

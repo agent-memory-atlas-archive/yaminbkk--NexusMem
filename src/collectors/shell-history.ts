@@ -7,6 +7,8 @@ import type { RawShellEntry } from '../shell/types.js';
 export interface ShellCollectorOptions {
   /** Default 1000 -- commands are short; no need for the 4000-char body cap commits use. */
   maxBodyChars?: number;
+  /** Record-time fallback used only for internal ordering when the source has no timestamp. */
+  recordedAt?: string;
 }
 
 const DEFAULT_MAX_BODY_CHARS = 1000;
@@ -80,7 +82,8 @@ export function toMemoryNode(entry: RawShellEntry, projectId: string, opts: Shel
     id: makeNodeId(projectId, 'shell_command', entry.naturalKey),
     kind: 'shell_command',
     projectId,
-    ts: entry.ts,
+    ts: entry.ts ?? opts.recordedAt ?? new Date().toISOString(),
+    sourceTs: entry.ts,
     source: `shell:${entry.shell}`,
     title: truncate(titleLine, MAX_TITLE_CHARS),
     body: renderBody(entry, redactedCommand, maxBody),
@@ -93,6 +96,7 @@ export function toMemoryNode(entry: RawShellEntry, projectId: string, opts: Shel
       exitCode: entry.exitCode,
       durationMs: entry.durationMs,
       tsApprox: entry.tsApprox,
+      sourceTimestamp: entry.ts,
       shell: entry.shell,
     },
   };

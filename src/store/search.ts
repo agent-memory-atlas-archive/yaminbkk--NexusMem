@@ -1,15 +1,17 @@
 import type { Database } from 'better-sqlite3';
-import type { NodeKind, Provenance, TrustState } from '../core/types.js';
+import type { CaptureMode, NodeKind, Provenance, TrustState } from '../core/types.js';
 import { toMatchQuery } from './fts.js';
 
 export interface SearchHit {
   id: string;
   kind: NodeKind;
   ts: string;
+  sourceTs?: string | null;
   title: string;
   body: string;
   signal: number;
   provenance: Provenance;
+  captureMode?: CaptureMode;
   trustState: TrustState;
   /** bm25 score; lower is a better lexical match. */
   rank: number;
@@ -27,10 +29,12 @@ interface NodeRow {
   id: string;
   kind: NodeKind;
   ts: string;
+  sourceTs: string | null;
   title: string;
   body: string;
   signal: number;
   provenance: Provenance;
+  captureMode: CaptureMode;
   trustState: TrustState;
   rank: number;
 }
@@ -72,7 +76,8 @@ export function search(db: Database, projectId: string, query: string, limit = 2
   const asOfEpoch = opts.asOfEpoch ?? null;
   const rows = db
     .prepare(
-      `SELECT n.id, n.kind, n.ts, n.title, n.body, n.signal, n.provenance, n.trust_state AS trustState,
+      `SELECT n.id, n.kind, n.ts, n.source_ts AS sourceTs, n.title, n.body, n.signal, n.provenance,
+              n.capture_mode AS captureMode, n.trust_state AS trustState,
               bm25(nodes_fts, 10.0, 1.0) AS rank
        FROM nodes_fts
        JOIN nodes n ON n.rowid = nodes_fts.rowid

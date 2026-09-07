@@ -57,10 +57,12 @@ export function mergeSearchAndVectorHits(bm25Hits: readonly SearchHit[], vectorH
       id: hit.id,
       kind: hit.kind,
       ts: hit.ts,
+      sourceTs: hit.sourceTs === undefined ? hit.ts : hit.sourceTs,
       title: hit.title,
       body: hit.body,
       signal: hit.signal,
       provenance: hit.provenance,
+      captureMode: hit.captureMode ?? 'unknown',
       trustState: hit.trustState,
       rank: 0,
     });

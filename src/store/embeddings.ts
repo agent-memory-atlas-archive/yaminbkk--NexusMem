@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import type { NodeKind, Provenance, TrustState } from '../core/types.js';
+import type { CaptureMode, NodeKind, Provenance, TrustState } from '../core/types.js';
 
 export interface EmbeddableNode {
   rowid: number;
@@ -12,10 +12,12 @@ export interface VectorHit {
   id: string;
   kind: NodeKind;
   ts: string;
+  sourceTs?: string | null;
   title: string;
   body: string;
   signal: number;
   provenance: Provenance;
+  captureMode?: CaptureMode;
   trustState: TrustState;
   /** Euclidean distance from the query vector; lower is closer. */
   distance: number;
@@ -116,7 +118,8 @@ export function vectorSearch(
   const k = asOfEpoch === null ? limit : Math.max(limit * 8, 50);
   return db
     .prepare(
-      `SELECT n.id, n.kind, n.ts, n.title, n.body, n.signal, n.provenance, n.trust_state AS trustState, v.distance AS distance
+      `SELECT n.id, n.kind, n.ts, n.source_ts AS sourceTs, n.title, n.body, n.signal, n.provenance,
+              n.capture_mode AS captureMode, n.trust_state AS trustState, v.distance AS distance
        FROM nodes_vec v
        JOIN nodes n ON n.rowid = v.rowid
        WHERE v.embedding MATCH ? AND k = ? AND v.project_id = ?
