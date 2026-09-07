@@ -29,8 +29,21 @@ export interface PackResult {
 }
 
 const DEFAULT_SUMMARY_CHARS = 320;
-/** Formatting overhead per node (date prefix, bullet, line breaks) counted as tokens. */
+/** Fixed formatting overhead per node (date prefix, bullet, line breaks) counted as tokens. */
 const NODE_OVERHEAD_TOKENS = 8;
+
+function renderedLabels(
+  provenance: Provenance,
+  captureMode: CaptureMode,
+  trustState: TrustState,
+  project?: string,
+): string {
+  const labels = [`[${provenance}]`];
+  if (captureMode !== 'unknown') labels.push(`[capture:${captureMode}]`);
+  if (trustState !== 'candidate') labels.push(`[${trustState}]`);
+  if (project) labels.push(`[${project}]`);
+  return labels.join(' ');
+}
 
 const CONVERSATION_ANSWER_MARKER = '\n\nA: ';
 
@@ -237,7 +250,12 @@ export function packContext(
     }
 
     const summary = summarize(hit, summaryChars, query);
-    const tokens = approxTokens(hit.title) + approxTokens(summary) + NODE_OVERHEAD_TOKENS;
+    const captureMode = hit.captureMode ?? 'unknown';
+    const tokens =
+      approxTokens(hit.title) +
+      approxTokens(summary) +
+      approxTokens(renderedLabels(hit.provenance, captureMode, hit.trustState, hit.project)) +
+      NODE_OVERHEAD_TOKENS;
 
     if (tokensUsed + tokens > tokensBudget) {
       droppedForBudget += 1;
@@ -255,7 +273,7 @@ export function packContext(
       summary,
       tokens,
       provenance: hit.provenance,
-      captureMode: hit.captureMode ?? 'unknown',
+      captureMode,
       trustState: hit.trustState,
       ...(hit.project ? { project: hit.project } : {}),
     });
@@ -277,15 +295,9 @@ export function renderContextBlock(query: string, result: PackResult): string {
     // The project tag is the whole point of a cross-project answer: without
     // it the reader cannot tell which repository a line describes, and two
     // repositories' conventions read as one contradictory history.
-    const project = node.project ? `[${node.project}] ` : '';
-    const provenance = `[${node.provenance}] `; // fact vs. inference, one glance
-    const captureLabel =
-      node.captureMode === 'observed' ? 'post-install' : node.captureMode === 'unknown' ? 'origin-unknown' : 'backfilled';
-    const capture = `[${captureLabel}] `;
-    // Silent for the overwhelming default ('candidate'): only a reviewed node earns a tag.
-    const trust = node.trustState !== 'candidate' ? `[${node.trustState}] ` : '';
+    const labels = renderedLabels(node.provenance, node.captureMode, node.trustState, node.project);
     const date = node.sourceTs === null ? 'date unknown' : node.sourceTs.slice(0, 10);
-    lines.push(`- ${date} ${provenance}${capture}${trust}${project}${node.title}`);
+    lines.push(`- ${date} ${labels} ${node.title}`);
     if (node.summary && node.summary !== node.title) {
       // A patch is the one body whose line structure *is* the content:
       // flattened onto one line, `-  return a;` and `+  return b;` become an

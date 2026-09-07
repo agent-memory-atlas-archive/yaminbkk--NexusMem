@@ -99,6 +99,16 @@ describe('nexusmem scan-shell', () => {
     expect(stdout.join('')).toContain('npm test');
   });
 
+  it('shows unknown instead of sync time for an untimestamped command', async () => {
+    writeFileSync(bashHistFile, 'npm test\n');
+
+    await runScanShell({ cwd: dir, tailLines: 300, minSignal: 0, json: false });
+
+    const output = stripAnsi(stdout.join(''));
+    expect(output).toContain('unknown');
+    expect(output).not.toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
+  });
+
   it('filters low-signal shell entries below minSignal', async () => {
     writeFileSync(bashHistFile, '#1700000000\nnpm test\n');
 

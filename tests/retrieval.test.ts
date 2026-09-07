@@ -391,9 +391,19 @@ describe('renderContextBlock', () => {
       sourceTs: null,
     });
     const block = renderContextBlock('test', packContext([historical], 2000));
-    expect(block).toContain('[backfilled]');
+    expect(block).toContain('[capture:backfilled]');
     expect(block).toContain('date unknown');
     expect(block).not.toContain(historical.ts.slice(0, 10));
+  });
+
+  it('hides unknown capture labels and counts rendered capture labels in the token budget', () => {
+    const unknown = ranked({ id: 'unknown', captureMode: 'unknown' });
+    const backfilled = ranked({ id: 'backfilled', captureMode: 'backfilled' });
+    const unknownPacked = packContext([unknown], 2000);
+    const backfilledPacked = packContext([backfilled], 2000);
+
+    expect(renderContextBlock('q', unknownPacked)).not.toContain('capture:unknown');
+    expect(backfilledPacked.nodes[0]!.tokens).toBeGreaterThan(unknownPacked.nodes[0]!.tokens);
   });
 
   it('tags a reviewed node with its trust_state verdict, but stays silent for the untouched default', () => {

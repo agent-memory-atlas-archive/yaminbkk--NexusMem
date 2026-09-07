@@ -192,6 +192,20 @@ describe('MemoryStore vector search (real sqlite-vec extension)', () => {
     expect(store.findNodesNeedingEmbedding(PROJECT)).toHaveLength(1);
   });
 
+  it('keeps an embedding when only capture metadata changes', () => {
+    store.upsertNodes([node({ id: 'a', sourceTs: '2026-08-01T00:00:00Z' })]);
+    const [pending] = store.findNodesNeedingEmbedding(PROJECT);
+    store.upsertEmbedding(pending!.rowid, PROJECT, new Float32Array(EMBEDDING_DIM).fill(0.2));
+
+    store.upsertNodes([node({ id: 'a', sourceTs: null, captureMode: 'backfilled' })]);
+
+    expect(store.findNodesNeedingEmbedding(PROJECT)).toHaveLength(0);
+    expect(store.getEmbedding('a')).not.toBeNull();
+    expect(
+      (store.raw.prepare('SELECT capture_mode AS captureMode FROM nodes WHERE id = ?').get('a') as { captureMode: string }).captureMode,
+    ).toBe('unknown');
+  });
+
   it('removes nodes_vec rows when a project is cleared', () => {
     store.upsertNodes([node({ id: 'a' })]);
     const [pending] = store.findNodesNeedingEmbedding(PROJECT);

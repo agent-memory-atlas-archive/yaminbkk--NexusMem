@@ -88,6 +88,7 @@ export function toMemoryNodes(file: RawDocFile, projectId: string, opts: DocsCol
       kind: 'doc_section',
       projectId,
       ts: file.ts,
+      sourceTs: null,
       source: 'docs',
       title: sectionTitle(file.path, chunk.heading, index, chunks.length),
       body: truncate(chunk.text, maxBody),

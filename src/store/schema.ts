@@ -324,14 +324,16 @@ ALTER TABLE nodes ADD COLUMN last_retrieved_at INTEGER;
 // The evidence-quality axis (`provenance`) cannot also say whether NexusMem
 // saw an event happen or reconstructed it from an artifact that already
 // existed at installation. Keep that as a separate field. `source_ts` is
-// nullable specifically for shell histories that do not record timestamps;
-// their legacy synthetic `ts` remains only as an internal ordering value.
+// nullable specifically when an artifact has no trustworthy content/event
+// timestamp (untimestamped shell history and document filesystem mtimes);
+// legacy synthetic `ts` values remain only for internal ordering.
 const V13 = `
 ALTER TABLE nodes ADD COLUMN capture_mode TEXT NOT NULL DEFAULT 'unknown';
 ALTER TABLE nodes ADD COLUMN source_ts TEXT;
 
 UPDATE nodes
 SET source_ts = CASE
+  WHEN kind = 'doc_section' THEN NULL
   WHEN kind = 'shell_command' AND json_extract(meta, '$.tsApprox') = 1 THEN NULL
   ELSE ts
 END;

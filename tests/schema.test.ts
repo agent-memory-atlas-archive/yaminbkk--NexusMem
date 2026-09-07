@@ -249,6 +249,7 @@ describe('migrate (V5 -> V6 provenance backfill against real pre-existing data)'
       VALUES (@id, @kind, 'proj-a', @ts, 1, @source, 't', 'b', 0.5, @meta, 'observed', 1)
     `);
     insert.run({ id: 'git', kind: 'git_commit', ts: '2020-01-01T00:00:00Z', source: 'git', meta: '{}' });
+    insert.run({ id: 'doc', kind: 'doc_section', ts: '2020-01-01T12:00:00Z', source: 'docs', meta: '{}' });
     insert.run({ id: 'shell', kind: 'shell_command', ts: '2020-01-02T00:00:00Z', source: 'shell:pwsh', meta: '{"tsApprox":true}' });
 
     const result = migrate(db);
@@ -256,6 +257,7 @@ describe('migrate (V5 -> V6 provenance backfill against real pre-existing data)'
     expect(result.to).toBe(13);
     const rows = db.prepare('SELECT id, capture_mode AS captureMode, source_ts AS sourceTs FROM nodes ORDER BY id').all();
     expect(rows).toEqual([
+      { id: 'doc', captureMode: 'unknown', sourceTs: null },
       { id: 'git', captureMode: 'unknown', sourceTs: '2020-01-01T00:00:00Z' },
       { id: 'shell', captureMode: 'unknown', sourceTs: null },
     ]);

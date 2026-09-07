@@ -51,13 +51,14 @@ export async function runScanShell(opts: ScanShellOptions): Promise<number> {
 }
 
 function formatNode(node: MemoryNode): string {
-  const approx = node.meta.tsApprox ? pc.dim('~') : ' ';
+  const sourceTimestamp = typeof node.meta.sourceTimestamp === 'string' ? node.meta.sourceTimestamp : null;
+  const timestamp = sourceTimestamp ? sourceTimestamp.slice(0, 16).replace('T', ' ') : pc.dim('unknown');
   const exit = node.meta.exitCode;
   // Red is reserved for the failure itself. The signal column grades
   // importance, not danger, and reads green-for-high like every other
   // `scan-*` command -- see cli/format.ts.
   const exitLabel = typeof exit === 'number' && exit !== 0 ? pc.red(`exit ${exit}`) : '';
-  return [formatSignal(node.signal, SHELL_SIGNAL_BANDS), approx + node.ts.slice(0, 16).replace('T', ' '), node.title, exitLabel]
+  return [formatSignal(node.signal, SHELL_SIGNAL_BANDS), timestamp, node.title, exitLabel]
     .filter(Boolean)
     .join(' ');
 }

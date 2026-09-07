@@ -104,13 +104,13 @@ export function upsertNodes(db: Database, nodes: readonly MemoryNode[]): IngestS
       }
       const sourceTs = node.sourceTs === undefined ? node.ts : node.sourceTs;
       const sourceEpoch = sourceTs === null ? Number.NaN : Date.parse(sourceTs);
-      const captureMode: CaptureMode = node.captureMode ?? (
-        sourceTs === null
-          ? (node.kind === 'shell_command' && !node.source.endsWith('-hook') ? 'backfilled' : 'unknown')
-          : initializedAt !== null && !Number.isNaN(sourceEpoch)
-            ? (sourceEpoch < initializedAt ? 'backfilled' : 'observed')
-            : 'unknown'
-      );
+      let captureMode: CaptureMode = 'unknown';
+      if (sourceTs !== null && !Number.isNaN(sourceEpoch)) {
+        if (node.captureMode === 'backfilled') captureMode = 'backfilled';
+        else if (node.captureMode === 'unknown') captureMode = 'unknown';
+        else if (initializedAt !== null && sourceEpoch < initializedAt) captureMode = 'backfilled';
+        else if (initializedAt !== null && sourceEpoch <= now) captureMode = 'observed';
+      }
 
       const prior = exists.get(node.id) as { body: string; signal: number; title: string; captureMode: CaptureMode; sourceTs: string | null } | undefined;
 
@@ -120,7 +120,7 @@ export function upsertNodes(db: Database, nodes: readonly MemoryNode[]): IngestS
           continue;
         }
         stats.updated += 1;
-        dropStaleEmbedding.run(node.id);
+        if (prior.body !== node.body || prior.title !== node.title) dropStaleEmbedding.run(node.id);
       } else {
         stats.inserted += 1;
       }

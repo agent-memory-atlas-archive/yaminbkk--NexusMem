@@ -57,7 +57,7 @@ describe('historical bootstrap', () => {
 
       const hits = store.search(projectId, 'amber cache', 20);
       expect(hits.some((hit) => hit.kind === 'git_commit' && hit.captureMode === 'backfilled')).toBe(true);
-      expect(hits.some((hit) => hit.kind === 'doc_section' && hit.provenance === 'authored' && hit.captureMode === 'backfilled')).toBe(true);
+      expect(hits.some((hit) => hit.kind === 'doc_section' && hit.provenance === 'authored' && hit.captureMode === 'unknown')).toBe(true);
       expect(hits.some((hit) => hit.kind === 'code_diff' && hit.captureMode === 'backfilled')).toBe(true);
 
       await runSync({ cwd: dir, full: true, rebuild: false, quiet: true, noEmbed: true, out: () => {} });
@@ -74,8 +74,14 @@ describe('historical bootstrap', () => {
     commit(dir, 'feat: historical foundation', '2020-01-01T00:00:00Z');
     await runInit({ cwd: dir, force: false, hook: false, enableConversation: false, out: () => {} });
 
+    const repo = await readRepoInfo(dir);
+    const projectId = makeProjectId({ root: repo.root, originUrl: repo.originUrl });
+    const storeBeforeCommit = MemoryStore.open(join(dir, '.nexusmem', 'memory.db'));
+    storeBeforeCommit.raw.prepare('UPDATE projects SET created_at = ? WHERE id = ?').run(Date.now() - 10_000, projectId);
+    storeBeforeCommit.close();
+
     writeFileSync(join(dir, 'history.txt'), 'old\nnew\n');
-    commit(dir, 'fix: observed repair', '2030-01-01T00:00:00Z');
+    commit(dir, 'fix: observed repair', new Date().toISOString());
     await runSync({ cwd: dir, full: false, rebuild: false, quiet: true, noEmbed: true, out: () => {} });
 
     const store = MemoryStore.open(join(dir, '.nexusmem', 'memory.db'));
@@ -98,19 +104,50 @@ describe('historical bootstrap', () => {
     store.upsertProject({ id: 'project', root: dir, originUrl: null });
     const entries = parsePsReadLineHistory('npm test\nnpm test\n', Date.now());
     const nodes = collectShellHistory(entries, 'project', { recordedAt: '2026-09-07T00:00:00Z' });
+    nodes[0]!.captureMode = 'backfilled';
     store.upsertNodes(nodes);
     try {
       const rows = store.raw
         .prepare("SELECT source_ts AS sourceTs, capture_mode AS captureMode, meta FROM nodes ORDER BY id")
         .all() as Array<{ sourceTs: string | null; captureMode: string; meta: string }>;
       expect(rows).toHaveLength(2);
-      expect(rows.every((row) => row.sourceTs === null && row.captureMode === 'backfilled')).toBe(true);
+      expect(rows.every((row) => row.sourceTs === null && row.captureMode === 'unknown')).toBe(true);
       for (const row of rows) {
         const meta = JSON.parse(row.meta) as Record<string, unknown>;
         expect(meta).toMatchObject({ cwd: null, exitCode: null, durationMs: null, sourceTimestamp: null });
       }
       expect(correlateFailures(store, 'project').failuresExamined).toBe(0);
       expect((store.raw.prepare('SELECT COUNT(*) AS n FROM node_links').get() as { n: number }).n).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('classifies future-dated source timestamps as unknown', () => {
+    const dir = tempDir('nexusmem-future-bootstrap-');
+    const store = MemoryStore.open(join(dir, 'memory.db'));
+    store.upsertProject({ id: 'project', root: dir, originUrl: null });
+    store.upsertNodes([
+      {
+        id: 'future',
+        kind: 'git_commit',
+        projectId: 'project',
+        ts: '2999-01-01T00:00:00Z',
+        sourceTs: '2999-01-01T00:00:00Z',
+        source: 'git',
+        title: 'future commit',
+        body: 'future commit',
+        files: [],
+        signal: 0.5,
+        meta: {},
+        captureMode: 'observed',
+      },
+    ]);
+    try {
+      const row = store.raw.prepare('SELECT capture_mode AS captureMode FROM nodes WHERE id = ?').get('future') as {
+        captureMode: string;
+      };
+      expect(row.captureMode).toBe('unknown');
     } finally {
       store.close();
     }

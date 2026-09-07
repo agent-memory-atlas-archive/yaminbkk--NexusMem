@@ -66,6 +66,7 @@ describe('toMemoryNodes (docs)', () => {
   it('tags every node with the docs source and the file as a touched path', () => {
     const nodes = toMemoryNodes(file('## A\n\ntext'), 'proj1');
     expect(nodes[0]!.source).toBe('docs');
+    expect(nodes[0]!.sourceTs).toBeNull();
     expect(nodes[0]!.files.map((f) => f.path)).toEqual(['README.md']);
   });
 

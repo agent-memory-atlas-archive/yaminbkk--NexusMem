@@ -1,11 +1,7 @@
-import { configDefaults, defineConfig } from 'vitest/config';
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    // Agent worktrees are independent checkouts, not part of this checkout's
-    // suite. Without this, a local `.claude/worktrees/*` is discovered a
-    // second time and its tests try to execute that worktree's absent dist.
-    exclude: [...configDefaults.exclude, '**/.claude/worktrees/**'],
     // Runs once, in the main process, before any test file starts. Builds
     // the root CLI a single time so the files that spawn it as a real
     // subprocess never race each other's independent build. See

@@ -107,5 +107,15 @@ export function collectShellHistory(
   projectId: string,
   opts: ShellCollectorOptions = {},
 ): MemoryNode[] {
-  return entries.map((entry) => toMemoryNode(entry, projectId, opts));
+  const recordedAt = opts.recordedAt ?? new Date().toISOString();
+  const parsedBaseEpoch = Date.parse(recordedAt);
+  const baseEpoch = Number.isNaN(parsedBaseEpoch) ? Date.now() : parsedBaseEpoch;
+  return entries.map((entry, index) =>
+    toMemoryNode(entry, projectId, {
+      ...opts,
+      // This is record-time ordering only. The source timestamp stays null,
+      // while increasing milliseconds preserve the history file's order.
+      recordedAt: new Date(baseEpoch + index).toISOString(),
+    }),
+  );
 }

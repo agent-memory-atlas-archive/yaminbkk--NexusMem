@@ -209,6 +209,16 @@ describe('collectShellHistory', () => {
     ];
     expect(collectShellHistory(entries, 'proj1').map((n) => n.title)).toEqual(['ls', 'npm test']);
   });
+
+  it('preserves file order for untimestamped entries using only internal ordering timestamps', () => {
+    const entries: RawShellEntry[] = [
+      { naturalKey: 'a', command: 'npm test', ts: null, tsApprox: true, exitCode: null, cwd: null, durationMs: null, shell: 'pwsh' },
+      { naturalKey: 'b', command: 'npm run build', ts: null, tsApprox: true, exitCode: null, cwd: null, durationMs: null, shell: 'pwsh' },
+    ];
+    const nodes = collectShellHistory(entries, 'proj1', { recordedAt: '2026-09-07T00:00:00.000Z' });
+    expect(nodes.map((node) => node.ts)).toEqual(['2026-09-07T00:00:00.000Z', '2026-09-07T00:00:00.001Z']);
+    expect(nodes.every((node) => node.sourceTs === null && node.meta.sourceTimestamp === null)).toBe(true);
+  });
 });
 
 describe('hook log', () => {
