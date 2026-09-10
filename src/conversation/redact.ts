@@ -22,7 +22,14 @@ interface Rule {
    * a diff is indexed for.
    */
   highConfidence: boolean;
+  /** Replacement built from the capture groups; without it the whole match becomes the marker. */
+  render?: (groups: readonly string[]) => string;
 }
+
+const MARK = '[redacted]';
+// Every rule refuses to re-match its own marker, so redacting twice changes nothing.
+const NOT_MARK = String.raw`(?!\[redacted\])`;
+const keepPrefix = (groups: readonly string[]): string => `${groups[0]}${MARK}`;
 
 // The keyword may sit anywhere inside an identifier (DB_PASSWORD, OPENAI_API_KEY, dbPassword, --api-key).
 // `token` is singular only: plural keys (max_tokens, rawTokens) are LLM token counts, not credentials.
@@ -33,6 +40,11 @@ const SECRET_KEY = String.raw`(?:[A-Za-z0-9_.-]{0,100}?${SECRET_KEYWORD}|(?:-{1,
 // Type annotations (`password: string`) are not values; everything else is hidden, however short.
 const TYPE_WORD = String.raw`(?:string|number|boolean|bool|int|str|null|undefined|none|nil|true|false|any|unknown|object)(?=[\s;,)|\]}>]|$)`;
 const SECRET_VALUE = String.raw`(?:"[^"\r\n]+"|'[^'\r\n]+'|\x60[^\x60\r\n]+\x60|[^\s'"\x60]+)`;
+// The rest of one shell command: stops at a pipe, `;`, `&` or newline so a tool name never reaches into the next command.
+const SAME_COMMAND = String.raw`[^\n|;&]{0,500}?`;
+// A next argument that is a flag or a redirection is not a value.
+const NOT_FLAG_OR_REDIRECT = String.raw`(?![-<>|&;])`;
+const AUTH_SCHEME = String.raw`(?:bearer|basic|token|digest|negotiate|ntlm)`;
 
 const RULES: Rule[] = [
   {
@@ -48,16 +60,101 @@ const RULES: Rule[] = [
     pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
     highConfidence: true,
   },
+  // scheme://user:password@host -- the password may itself contain `@`, so the host starts after the last one.
+  {
+    name: 'uri-credentials',
+    pattern: new RegExp(
+      String.raw`(\b[a-z][a-z0-9+.-]{1,30}://[^\s/?#'"@:]*:)${NOT_MARK}[^\s/?#'"]+(?=@[^\s/?#'"@]*(?:[/?#\s'"]|$))`,
+      'gi',
+    ),
+    highConfidence: true,
+    render: keepPrefix,
+  },
+  // A bearer token outside a header (`--oauth2-bearer x`); it must contain a digit so "bearer authentication" is left alone.
+  {
+    name: 'bearer-token',
+    pattern: new RegExp(String.raw`(\bbearer[ \t]+)${NOT_MARK}(?=[A-Za-z0-9._~+/-]*\d)[A-Za-z0-9._~+/-]{16,}=*`, 'gi'),
+    highConfidence: true,
+    render: keepPrefix,
+  },
+  // Tool-anchored password arguments: `-p` means port or parents almost everywhere else. Case-sensitive (`-P` is mysql's port).
+  // mysql takes only the compact `-psecret` form; `-p secret` means "prompt, then use database secret".
+  {
+    name: 'mysql-password-arg',
+    pattern: new RegExp(
+      String.raw`(\b(?:mysql|mysqldump|mysqladmin|mysqlimport|mysqlsh|mariadb|mariadb-dump)(?=[ \t])${SAME_COMMAND}[ \t]-p)${NOT_MARK}(?=\S)${SECRET_VALUE}`,
+      'g',
+    ),
+    highConfidence: true,
+    render: keepPrefix,
+  },
+  // Only sshpass's own options may precede -p, so a wrapped `ssh -p 22` is never read as the password.
+  {
+    name: 'sshpass-password-arg',
+    pattern: new RegExp(String.raw`(\bsshpass(?:[ \t]+-[^p\s]\S*)*[ \t]+-p[ \t]*)${NOT_MARK}(?=\S)${SECRET_VALUE}`, 'g'),
+    highConfidence: true,
+    render: keepPrefix,
+  },
+  {
+    name: 'mongo-password-arg',
+    pattern: new RegExp(
+      String.raw`(\bmongo(?:sh|dump|restore|export|import|stat|top|files)?(?=[ \t])${SAME_COMMAND}[ \t]-p[ \t]+)${NOT_FLAG_OR_REDIRECT}${NOT_MARK}${SECRET_VALUE}`,
+      'g',
+    ),
+    highConfidence: true,
+    render: keepPrefix,
+  },
+  {
+    name: 'redis-cli-password-arg',
+    pattern: new RegExp(
+      String.raw`(\bredis-cli(?=[ \t])${SAME_COMMAND}[ \t]-a[ \t]+)${NOT_FLAG_OR_REDIRECT}${NOT_MARK}${SECRET_VALUE}`,
+      'g',
+    ),
+    highConfidence: true,
+    render: keepPrefix,
+  },
+  {
+    name: 'curl-user-password',
+    pattern: new RegExp(
+      String.raw`(\bcurl(?=[ \t])${SAME_COMMAND}[ \t](?:-u|--user)(?:[ \t]+|=)?["']?[^\s:'"]*:)${NOT_MARK}[^\s'"]+`,
+      'g',
+    ),
+    highConfidence: true,
+    render: keepPrefix,
+  },
+  // Authorization: Bearer x / Basic x / token x. The scheme word is kept; it must not be mistaken for the value.
+  {
+    name: 'authorization-header',
+    pattern: new RegExp(
+      String.raw`(\b(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*["'\x60]?(?:${AUTH_SCHEME}[ \t]+)?)(?!${AUTH_SCHEME}[ \t])${NOT_MARK}[^\s'"\x60]+`,
+      'gi',
+    ),
+    highConfidence: false,
+    render: keepPrefix,
+  },
+  // `--password secret`: a secret-named option whose value is the next argument. The flag must start a
+  // command-line word, so prose like "the `id`-token heuristic" is not read as a `-token` option.
+  {
+    name: 'secret-option-arg',
+    pattern: new RegExp(
+      String.raw`(?<=^|[\s'"(])(-{1,2}${SECRET_KEY}[ \t]+)${NOT_FLAG_OR_REDIRECT}${NOT_MARK}${SECRET_VALUE}`,
+      'gi',
+    ),
+    highConfidence: false,
+    render: keepPrefix,
+  },
   // key/token/secret/password = "value" or : value, in code, JSON, env-file, shell or prose form.
   // The key start is an explicit non-identifier lookbehind, not `\b`: `_` is a word character, so
   // `\b` never fired inside DB_PASSWORD and the value leaked. Found live via `scan-shell`.
   {
     name: 'key-value-secret',
     pattern: new RegExp(
-      String.raw`(?<![A-Za-z0-9_.-])(${SECRET_KEY})["']?[ \t]*[:=](?![=>])[ \t]*(?!${TYPE_WORD})(?!\[redacted\])${SECRET_VALUE}`,
+      String.raw`(?<![A-Za-z0-9_.-])(${SECRET_KEY})["']?[ \t]*[:=](?![=>])[ \t]*(?!${TYPE_WORD})${NOT_MARK}${SECRET_VALUE}`,
       'gi',
     ),
     highConfidence: false,
+    // Keep the key name so the redaction is legible ("apiKey: [redacted]").
+    render: (groups) => `${groups[0]}: ${MARK}`,
   },
 ];
 
@@ -79,16 +176,13 @@ export function redact(text: string, profile: RedactProfile = 'all'): RedactResu
 
   for (const rule of RULES) {
     if (profile === 'high-confidence' && !rule.highConfidence) continue;
-    out = out.replace(rule.pattern, (_match: string, ...rest: unknown[]) => {
+    out = out.replace(rule.pattern, (...args: unknown[]) => {
       redactedCount += 1;
-      // `String.replace` passes (match, ...groups, offset, wholeString), so for
-      // a rule with no capture group `rest[0]` is the *offset* -- a number, and
-      // truthy at any position but the very first. Testing the type rather than
-      // truthiness is what keeps a match position out of the indexed corpus.
-      const key = typeof rest[0] === 'string' ? rest[0] : null;
-      // Keep the key name for key/value matches so the redaction is legible
-      // ("apiKey: [redacted]" reads better than a bare "[redacted]").
-      return key ? `${key}: [redacted]` : '[redacted]';
+      // `replace` passes (match, ...groups, offset, wholeString): the groups end at the first
+      // number. Slicing by type keeps a match offset from ever being mistaken for a group.
+      const end = args.findIndex((arg, i) => i > 0 && typeof arg === 'number');
+      const groups = args.slice(1, end).map((g) => (typeof g === 'string' ? g : ''));
+      return rule.render ? rule.render(groups) : MARK;
     });
   }
 
