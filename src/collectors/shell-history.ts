@@ -1,5 +1,5 @@
 import { redact } from '../conversation/redact.js';
-import { makeNodeId } from '../core/ids.js';
+import { makeNodeId, sha256Hex } from '../core/ids.js';
 import { truncate } from '../core/text.js';
 import type { MemoryNode } from '../core/types.js';
 import type { RawShellEntry } from '../shell/types.js';
@@ -65,16 +65,11 @@ function renderBody(entry: RawShellEntry, command: string, maxChars: number): st
 
 export function toMemoryNode(entry: RawShellEntry, projectId: string, opts: ShellCollectorOptions = {}): MemoryNode {
   const maxBody = opts.maxBodyChars ?? DEFAULT_MAX_BODY_CHARS;
-  // Redacted separately from `entry.command`: title/body are what actually
-  // land in the FTS index and the vector embeddings (see vector/sync.ts),
-  // and from there in `search_memory` results -- a secret typed at a prompt
-  // (`export TOKEN=...`, a bearer header, a connection string) must not
-  // travel that path back into a future LLM context. `meta.command` below is
-  // kept raw on purpose: reconcile.ts rehashes it to reproduce the exact id
-  // `shell/detect.ts` derives from the live hook log, and
-  // correlate/failure-fix.ts exact-matches it against a re-run command --
-  // both would silently break (nodes going dark, the way a real project-id
-  // rename once did) if this copy stopped matching the raw source text.
+  // The raw command never leaves this function: title, body AND meta.command
+  // are all redacted, since meta is persisted too and read back by precheck,
+  // failure-fix and `scan-shell --json`. Only the id derivation sees the raw
+  // text (via `naturalKey`); `meta.commandHash` carries that same hash prefix
+  // so reconcile.ts can recompute a hook node's id without the raw command.
   const { text: redactedCommand } = redact(entry.command);
   const titleLine = redactedCommand.split(/\r?\n/)[0] ?? redactedCommand;
 
@@ -91,7 +86,8 @@ export function toMemoryNode(entry: RawShellEntry, projectId: string, opts: Shel
     signal: scoreShellCommand(entry),
     provenance: 'observed',
     meta: {
-      command: entry.command,
+      command: redactedCommand,
+      commandHash: sha256Hex(entry.command).slice(0, 12),
       cwd: entry.cwd,
       exitCode: entry.exitCode,
       durationMs: entry.durationMs,

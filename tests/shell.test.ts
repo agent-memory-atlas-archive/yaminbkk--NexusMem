@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { collectShellHistory, scoreShellCommand, toMemoryNode } from '../src/collectors/shell-history.js';
+import { makeNodeId, sha256Hex } from '../src/core/ids.js';
 import { appendHookLogEntry, parseHookLogLine, readHookLog } from '../src/shell/hook-log.js';
 import { parseBashHistory } from '../src/shell/parse-bash.js';
 import { parsePsReadLineHistory } from '../src/shell/parse-psreadline.js';
@@ -184,20 +185,35 @@ describe('toMemoryNode (shell)', () => {
     expect(toMemoryNode(entry, 'proj1').files).toEqual([]);
   });
 
-  it('redacts a secret out of title/body -- the fields that reach the FTS index and embeddings -- while keeping meta.command raw for reconcile/failure-fix matching', () => {
+  it('redacts a secret out of title, body AND meta -- meta is persisted and read back too', () => {
     const withSecret: RawShellEntry = { ...entry, command: 'export API_KEY=sk_live_abcdef1234567890' };
     const node = toMemoryNode(withSecret, 'proj1');
 
     expect(node.title).not.toContain('sk_live_abcdef1234567890');
     expect(node.body).not.toContain('sk_live_abcdef1234567890');
+    expect(JSON.stringify(node.meta)).not.toContain('sk_live_abcdef1234567890');
     expect(node.title).toContain('[redacted]');
     expect(node.body).toContain('[redacted]');
+    expect(node.meta.command).toBe('export API_KEY: [redacted]');
+  });
 
-    // meta.command must stay byte-for-byte the raw command: reconcile.ts
-    // rehashes it to reproduce the id shell/detect.ts derives from the live
-    // hook log, and correlate/failure-fix.ts exact-matches it against a
-    // re-run command. Redacting this copy too would silently break both.
-    expect(node.meta.command).toBe('export API_KEY=sk_live_abcdef1234567890');
+  it.each([
+    'export PASSWORD=my-secret',
+    'export DB_PASSWORD=my-secret',
+    'DB_PASSWORD="my-secret" psql -h db',
+    '$env:DB_PASSWORD="my-secret"',
+  ])('never lets %s reach any persisted field', (command) => {
+    const node = toMemoryNode({ ...entry, command }, 'proj1');
+    expect(JSON.stringify(node)).not.toContain('my-secret');
+  });
+
+  it("keeps the id derived from the raw command and stores that hash as meta.commandHash for reconcile", () => {
+    const command = 'export DB_PASSWORD=my-secret';
+    const hookEntry: RawShellEntry = { ...entry, command, naturalKey: `pwsh-hook:${entry.ts}:${sha256Hex(command).slice(0, 12)}` };
+    const node = toMemoryNode(hookEntry, 'proj1');
+
+    expect(node.id).toBe(makeNodeId('proj1', 'shell_command', hookEntry.naturalKey));
+    expect(node.meta.commandHash).toBe(sha256Hex(command).slice(0, 12));
   });
 });
 
