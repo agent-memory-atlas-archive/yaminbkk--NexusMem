@@ -33,6 +33,7 @@ import { runScanGithub } from './commands/scan-github.js';
 import { runScanSession, SCAN_SESSION_DEFAULT_MODEL } from './commands/scan-session.js';
 import { runScanShell } from './commands/scan-shell.js';
 import { runScanStructure } from './commands/scan-structure.js';
+import { runScrubSecrets } from './commands/scrub-secrets.js';
 import { runStale, STALE_DEFAULT_MODEL } from './commands/stale.js';
 import { runStatus } from './commands/status.js';
 import { runSync } from './commands/sync.js';
@@ -286,6 +287,21 @@ program
         import: options.import,
         yes: options.yes,
       }),
+    )(),
+  );
+
+program
+  .command('scrub-secrets')
+  .description(
+    'Redact secrets that older versions already stored (database rows, FTS index, embeddings, shell hook log) -- dry-run unless --yes',
+  )
+  .option('-C, --cwd <path>', 'repository path', process.cwd())
+  .option('-a, --all-projects', 'every repository in the NexusMem registry, not just this one', false)
+  .option('--no-embed', 'leave re-embedding the redacted nodes to the next sync')
+  .option('--yes', 'back up each database, then redact it in place', false)
+  .action((options) =>
+    guard(() =>
+      runScrubSecrets({ cwd: options.cwd, allProjects: options.allProjects, yes: options.yes, embed: options.embed }),
     )(),
   );
 

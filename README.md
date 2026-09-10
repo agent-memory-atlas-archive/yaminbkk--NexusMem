@@ -425,6 +425,9 @@ node afterward. `--verify` is a label only; it does not boost ranking. Every nod
 
 `init`, `sync`, `query <text>` (add `--as-of <date>` for a bi-temporal read, see below), `status` (add
 `--share` for a plain-text summary worth pasting somewhere), `projects`, `mcp`, `forget <value>`,
+`scrub-secrets` (re-redacts secrets that versions before 0.10.5 already stored — database rows, FTS
+index, embeddings and the shell hook log; dry-run unless `--yes`, which backs each database up first;
+`--all-projects` covers every registered repository),
 `stale` (add `--check-contradictions` for a local-SLM content check, see above), `mark-stale
 <nodeId> --supersedes <newNodeId>`, `review <nodeId> --verify|--reject` (record a human verdict on
 one node, see above), `precheck` (advisory — warns about staged files with an unresolved past
