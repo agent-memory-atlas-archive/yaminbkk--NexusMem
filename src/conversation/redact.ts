@@ -24,6 +24,16 @@ interface Rule {
   highConfidence: boolean;
 }
 
+// The keyword may sit anywhere inside an identifier (DB_PASSWORD, OPENAI_API_KEY, dbPassword, --api-key).
+// `token` is singular only: plural keys (max_tokens, rawTokens) are LLM token counts, not credentials.
+const SECRET_KEYWORD = String.raw`(?:(?:pass(?:word|wd|phrase)|secret|credential|api[_-]?key|(?:access|private|secret|client|signing|encryption|master)[_-]?key)s?|token)`;
+// Bare `pass` needs a prefix component or dashes (DB_PASS, --pass), so prose like "first pass: x" and `bypass` never match.
+// Bounded so a long identifier run full of keywords stays linear, not quadratic.
+const SECRET_KEY = String.raw`(?:[A-Za-z0-9_.-]{0,100}?${SECRET_KEYWORD}|(?:-{1,2}|(?:[A-Za-z0-9]{1,40}[_.-]){1,8})pass)(?:[_.-][A-Za-z0-9]{1,40}){0,8}`;
+// Type annotations (`password: string`) are not values; everything else is hidden, however short.
+const TYPE_WORD = String.raw`(?:string|number|boolean|bool|int|str|null|undefined|none|nil|true|false|any|unknown|object)(?=[\s;,)|\]}>]|$)`;
+const SECRET_VALUE = String.raw`(?:"[^"\r\n]+"|'[^'\r\n]+'|\x60[^\x60\r\n]+\x60|[^\s'"\x60]+)`;
+
 const RULES: Rule[] = [
   {
     name: 'private-key-block',
@@ -38,10 +48,15 @@ const RULES: Rule[] = [
     pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
     highConfidence: true,
   },
-  // key/token/secret/password = "value" or : value, in code, JSON, env-file or prose form.
+  // key/token/secret/password = "value" or : value, in code, JSON, env-file, shell or prose form.
+  // The key start is an explicit non-identifier lookbehind, not `\b`: `_` is a word character, so
+  // `\b` never fired inside DB_PASSWORD and the value leaked. Found live via `scan-shell`.
   {
     name: 'key-value-secret',
-    pattern: /\b((?:api[_-]?key|secret|password|passwd|token|access[_-]?key)s?)\s*[:=]\s*['"]?[A-Za-z0-9_\-./+=]{8,}['"]?/gi,
+    pattern: new RegExp(
+      String.raw`(?<![A-Za-z0-9_.-])(${SECRET_KEY})["']?[ \t]*[:=](?![=>])[ \t]*(?!${TYPE_WORD})(?!\[redacted\])${SECRET_VALUE}`,
+      'gi',
+    ),
     highConfidence: false,
   },
 ];
