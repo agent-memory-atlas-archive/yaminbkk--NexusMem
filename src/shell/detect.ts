@@ -42,8 +42,11 @@ function isUnderRoot(cwd: string, root: string): boolean {
 function hookEntryToRaw(e: HookLogEntry): RawShellEntry {
   // Lines predating the `shell` field are all PowerShell's -- it was the only hook that existed then.
   const shell = e.shell ?? 'pwsh-hook';
+  // A line already redacted by sanitizeHookLog carries its raw command's hash, keeping the id stable.
+  const commandHash = e.commandHash ?? sha256Hex(e.command).slice(0, 12);
   return {
-    naturalKey: `${shell}:${e.ts}:${sha256Hex(e.command).slice(0, 12)}`,
+    naturalKey: `${shell}:${e.ts}:${commandHash}`,
+    commandHash,
     command: e.command,
     ts: e.ts,
     tsApprox: false,

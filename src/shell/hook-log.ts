@@ -1,5 +1,7 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { redact } from '../conversation/redact.js';
+import { sha256Hex } from '../core/ids.js';
 
 /**
  * One line of the opt-in hook log: a JSONL file the installed shell hook
@@ -19,6 +21,8 @@ export interface HookLogEntry {
   durationMs: number | null;
   command: string;
   shell?: HookShellKind;
+  /** sha256 prefix of the raw command, written when `sanitizeHookLog` redacted this line, so ids derived from it survive. */
+  commandHash?: string;
 }
 
 /** A malformed line (typically a torn write from a crash mid-append) is skipped, not fatal. */
@@ -36,8 +40,10 @@ export function parseHookLogLine(line: string): HookLogEntry | null {
 
   const o = obj as Record<string, unknown>;
   if (typeof o.ts !== 'string' || typeof o.cwd !== 'string' || typeof o.command !== 'string') return null;
+  const commandHash = typeof o.commandHash === 'string' && /^[0-9a-f]{12}$/.test(o.commandHash) ? o.commandHash : undefined;
 
   return {
+    ...(commandHash ? { commandHash } : {}),
     ts: o.ts,
     cwd: o.cwd,
     exitCode: typeof o.exitCode === 'number' ? o.exitCode : null,
@@ -93,6 +99,98 @@ export async function readHookLog(path: string, fromLine: number): Promise<ReadH
   const entries = allParsed.slice(sliceStart).filter((e): e is HookLogEntry => e !== null);
 
   return { entries, totalLines: lines.length, shellsSeen };
+}
+
+function sanitizeLine(line: string): string {
+  if (line.trim().length === 0) return line;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return redact(line).text; // a torn line is still text a secret can sit in
+  }
+  const o = obj as Record<string, unknown> | null;
+  if (typeof o !== 'object' || o === null || typeof o.command !== 'string') return redact(line).text;
+
+  const raw = o.command;
+  const { text } = redact(raw);
+  if (text === raw) return line;
+  const commandHash = typeof o.commandHash === 'string' ? o.commandHash : sha256Hex(raw).slice(0, 12);
+  return JSON.stringify({ ...o, command: text, commandHash });
+}
+
+/** Line endings are kept byte-for-byte, so a log with nothing to redact comes back identical. */
+function sanitizeText(raw: string): { text: string; changed: number } {
+  const parts = raw.split(/(\r?\n)/);
+  let changed = 0;
+  for (let i = 0; i < parts.length; i += 2) {
+    const next = sanitizeLine(parts[i]!);
+    if (next !== parts[i]) {
+      parts[i] = next;
+      changed += 1;
+    }
+  }
+  return { text: parts.join(''), changed };
+}
+
+async function readRange(path: string, start: number, end: number): Promise<Buffer> {
+  const fh = await open(path, 'r');
+  try {
+    const buf = Buffer.alloc(end - start);
+    await fh.read(buf, 0, buf.length, start);
+    return buf;
+  } finally {
+    await fh.close();
+  }
+}
+
+const RENAME_BUSY = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+/**
+ * Redact every command in the hook log in place. The installed hooks write
+ * raw commands (they cannot run the redactor per prompt), so this is what
+ * keeps secrets from staying in the log: `sync` runs it after every read,
+ * `scrub-secrets` on demand. Line count and order are preserved exactly --
+ * every project's cursor into this shared log is a line count.
+ */
+export async function sanitizeHookLog(path: string, opts: { dryRun?: boolean } = {}): Promise<{ linesChanged: number }> {
+  let raw: Buffer;
+  try {
+    raw = await readFile(path);
+  } catch {
+    return { linesChanged: 0 };
+  }
+  const first = sanitizeText(raw.toString('utf8'));
+  if (first.changed === 0 || opts.dryRun) return { linesChanged: first.changed };
+
+  const tmp = `${path}.${process.pid}.scrub.tmp`;
+  let linesChanged = first.changed;
+  try {
+    await writeFile(tmp, first.text, { encoding: 'utf8', mode: 0o600 });
+    let consumed = raw.length;
+    for (let attempt = 0; ; attempt += 1) {
+      // A shell may have appended meanwhile: carry those lines over, redacted, right before the swap.
+      const size = (await stat(path)).size;
+      if (size > consumed) {
+        const extra = sanitizeText((await readRange(path, consumed, size)).toString('utf8'));
+        await appendFile(tmp, extra.text, 'utf8');
+        linesChanged += extra.changed;
+        consumed = size;
+      }
+      try {
+        await rename(tmp, path);
+        break;
+      } catch (err) {
+        // Windows refuses the swap while a shell holds the file open for its append.
+        if (attempt >= 20 || !RENAME_BUSY.has((err as NodeJS.ErrnoException).code ?? '')) throw err;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
+  return { linesChanged };
 }
 
 /** Append one entry. Exposed for tests; the real writer is the installed PowerShell hook. */

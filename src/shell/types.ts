@@ -19,6 +19,8 @@ export interface RawShellEntry {
    */
   naturalKey: string;
   command: string;
+  /** sha256 prefix of the raw command, when `command` was already redacted at the source (see sanitizeHookLog). */
+  commandHash?: string;
   /** ISO-8601 from the history artifact, or null when that artifact records no timestamp. */
   ts: string | null;
   /** Legacy name: false means `ts` is exact; true now means the source timestamp is absent. */

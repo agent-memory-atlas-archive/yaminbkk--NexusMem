@@ -87,7 +87,7 @@ export function toMemoryNode(entry: RawShellEntry, projectId: string, opts: Shel
     provenance: 'observed',
     meta: {
       command: redactedCommand,
-      commandHash: sha256Hex(entry.command).slice(0, 12),
+      commandHash: entry.commandHash ?? sha256Hex(entry.command).slice(0, 12),
       cwd: entry.cwd,
       exitCode: entry.exitCode,
       durationMs: entry.durationMs,
