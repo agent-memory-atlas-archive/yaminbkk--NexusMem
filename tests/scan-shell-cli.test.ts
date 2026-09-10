@@ -125,6 +125,21 @@ describe('nexusmem scan-shell', () => {
     expect(Number(filtered![1])).toBe(0);
   });
 
+  it('never prints a prefixed secret assignment, in the preview or in --json', async () => {
+    writeFileSync(bashHistFile, '#1700000000\nexport PASSWORD=my-secret\n#1700000100\nexport DB_PASSWORD=my-secret\n');
+
+    await runScanShell({ cwd: dir, tailLines: 300, minSignal: 0, json: false });
+    const preview = stripAnsi(stdout.join('') + stderr.join(''));
+    expect(preview).toContain('export PASSWORD: [redacted]');
+    expect(preview).toContain('export DB_PASSWORD: [redacted]');
+    expect(preview).not.toContain('my-secret');
+
+    stdout = [];
+    stderr = [];
+    await runScanShell({ cwd: dir, tailLines: 300, minSignal: 0, json: true });
+    expect(stdout.join('')).not.toContain('my-secret');
+  });
+
   it('--json emits an array of shell_command nodes', async () => {
     writeFileSync(bashHistFile, '#1700000000\nnpm test\n');
 
