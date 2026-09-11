@@ -51,6 +51,19 @@ export const ConfigSchema = z.object({
         })
         .default({ enabled: true, tailLines: 300 }),
       /**
+       * Commands a coding agent ran and files it edited, captured by the
+       * agent hook (`nexusmem agent install`).
+       *
+       * On by default, like git/shell, because it reads only what NexusMem's
+       * own hook wrote: with no hook installed there is nothing to read.
+       * Installing that hook is the deliberate step.
+       */
+      agent: z
+        .object({
+          enabled: z.boolean().default(true),
+        })
+        .default({ enabled: true }),
+      /**
        * Opt-in, unlike git/shell: conversation transcripts are the source
        * most likely to contain something sensitive (a pasted credential,
        * confidential discussion), so this must be a deliberate choice, not
@@ -149,6 +162,7 @@ export const ConfigSchema = z.object({
     .default({
       git: { enabled: true, since: null, includeMerges: true },
       shell: { enabled: true, tailLines: 300 },
+      agent: { enabled: true },
       conversation: { enabled: false },
       session: {
         enabled: false,

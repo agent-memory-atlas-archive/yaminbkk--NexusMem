@@ -28,6 +28,9 @@ import { collectFileEdges } from '../../structure/collect.js';
 import { OllamaEmbeddingProvider, type EmbeddingProvider } from '../../vector/embed.js';
 import { embedPendingNodes } from '../../vector/sync.js';
 import { loadContext } from '../context.js';
+import { agentEventLogPath } from '../../agent/paths.js';
+import { readAgentEvents } from '../../agent/record.js';
+import { collectAgentEvents } from '../../collectors/agent-events.js';
 import { acquireSyncLock, type SyncLock } from '../sync-lock.js';
 
 export interface SyncOptions {
@@ -299,6 +302,43 @@ async function syncShell(
   }
 
   return { totals, seen };
+}
+
+const AGENT_SOURCE = 'agent:claude-code';
+
+/**
+ * Ingest what a coding agent did: NexusMem's own agent hook writes the log,
+ * so with no hook installed this is a silent no-op rather than a warning.
+ */
+async function syncAgent(
+  store: MemoryStore,
+  projectId: string,
+  repoRoot: string,
+  config: Awaited<ReturnType<typeof loadContext>>['config'],
+  log: (line: string) => void,
+): Promise<{ totals: IngestStats; seen: number }> {
+  const totals: IngestStats = { inserted: 0, updated: 0, unchanged: 0, denied: 0 };
+
+  if (!config.sources.agent.enabled) {
+    log(`${pc.dim('agent')} disabled in config`);
+    return { totals, seen: 0 };
+  }
+
+  const logPath = agentEventLogPath();
+  if (!existsSync(logPath)) return { totals, seen: 0 };
+
+  // An append-only log, like the shell hook's: walk forward from a line cursor.
+  const fromLine = Number(store.getSyncCursor(projectId, AGENT_SOURCE) ?? '0') || 0;
+  const { events, totalLines } = await readAgentEvents(logPath, fromLine);
+  const nodes = collectAgentEvents(events, projectId, { repoRoot, maxBodyChars: config.limits.maxBodyChars });
+
+  if (nodes.length > 0) {
+    addStats(totals, store.upsertNodes(nodes));
+    log(`  ${pc.dim(`${AGENT_SOURCE}: ${nodes.length} agent action(s) read`)}`);
+  }
+  store.setSyncCursor(projectId, AGENT_SOURCE, String(totalLines));
+
+  return { totals, seen: nodes.length };
 }
 
 const CONVERSATION_SOURCE = 'conversation:claude-code';
@@ -746,6 +786,7 @@ export async function runSync(opts: SyncOptions): Promise<number> {
     const git = await syncGit(store, projectId, opts, repo, config, log);
     const diffs = await syncDiffs(store, projectId, opts, repo, config, log);
     const shell = await syncShell(store, projectId, opts, repo.root, config, log);
+    const agent = await syncAgent(store, projectId, repo.root, config, log);
 
     // Read once, used by two sources. Parsing every transcript twice was
     // measurable on a repo with a long history of sessions, and both sources
@@ -801,7 +842,9 @@ export async function runSync(opts: SyncOptions): Promise<number> {
         : '';
 
     let linkLine = '';
-    if (opts.linkFailures) {
+    // Agent actions are captured precisely to link a failure to what fixed it,
+    // so their arrival correlates without waiting for --link-failures.
+    if (opts.linkFailures || agent.seen > 0) {
       // After ingest/embedding, not folded into any one source's sync
       // function above: correlation reads across shell_command and
       // conversation_turn/session_summary nodes together, so it only makes
@@ -816,6 +859,7 @@ export async function runSync(opts: SyncOptions): Promise<number> {
     addStats(totals, git.totals);
     addStats(totals, diffs.totals);
     addStats(totals, shell.totals);
+    addStats(totals, agent.totals);
     addStats(totals, conversation.totals);
     addStats(totals, sessions.totals);
     addStats(totals, docs.totals);
@@ -831,11 +875,13 @@ export async function runSync(opts: SyncOptions): Promise<number> {
     const structurePart = config.sources.structure.enabled ? `, ${structure.edges} import edge(s)` : '';
     const githubEnabled = opts.githubOverride ?? config.sources.github.enabled;
     const githubPart = githubEnabled ? `, ${github.seen} github thread(s)` : '';
+    // Only when there are any: a repo with no agent hook installed should not be told about a source it never used.
+    const agentPart = agent.seen > 0 ? `, ${agent.seen} agent action(s)` : '';
     const deniedPart = totals.denied > 0 ? `  ${pc.red(`-${totals.denied} denied`)}` : '';
 
     out(
       [
-        `${pc.green('synced')} ${git.seen} commit(s)${diffPart}, ${shell.seen} shell entr${shell.seen === 1 ? 'y' : 'ies'}${conversationPart}${sessionPart}${docsPart}${githubPart}${structurePart} in ${elapsed}s`,
+        `${pc.green('synced')} ${git.seen} commit(s)${diffPart}, ${shell.seen} shell entr${shell.seen === 1 ? 'y' : 'ies'}${agentPart}${conversationPart}${sessionPart}${docsPart}${githubPart}${structurePart} in ${elapsed}s`,
         `  ${pc.green(`+${totals.inserted} new`)}  ${pc.yellow(`~${totals.updated} updated`)}  ${pc.dim(`=${totals.unchanged} unchanged`)}${deniedPart}`,
         `  ${pc.dim(`${stats.total} node(s) total across ${stats.distinctFiles} file path(s)`)}`,
         '',
