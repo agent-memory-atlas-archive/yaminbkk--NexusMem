@@ -35,6 +35,14 @@ built from, matched by publish timestamp: `v0.1.0` → `67a4776`, `v0.1.1` → `
 - Agent actions are ingested by every `sync`, and their arrival now runs failure→fix correlation
   without `--link-failures`.
 
+### Changed
+
+- Failure→fix correlation treats an agent attempt as files changed, execution and result, rather
+  than as a command string. When an agent-recorded command fails and the identical command later
+  passes with nothing edited in between, that pass is reported as unexplained instead of being
+  linked as the fix — the pass is real, the explanation is not. Human shell history records no files,
+  so its linking is unchanged.
+
 ## [0.10.5] — 2026-09-11
 
 Security release. Existing installs need action after upgrading — see "Action required" below.
