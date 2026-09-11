@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { captureDropStatePath, recordCaptureDrop } from '../src/agent/capture-health.js';
+import { agentEventLogPath } from '../src/agent/paths.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type AgentEvent, redactAgentEvent } from '../src/agent/event.js';
 import { type AgentHookCommands, agentHookCommands } from '../src/agent/hook-command.js';
@@ -143,7 +145,7 @@ describe('nexusmem agent (CLI)', () => {
 
     const installed: string[] = [];
     await runAgentStatus({ cwd: dir, scope: 'project', out: (c) => installed.push(c) });
-    expect(installed.join('')).toContain('installed');
+    expect(installed.join('')).toMatch(/installed\s+yes/);
 
     const removed: string[] = [];
     await runAgentRemove({ cwd: dir, scope: 'project', out: (c) => removed.push(c) });
@@ -151,7 +153,81 @@ describe('nexusmem agent (CLI)', () => {
 
     const after: string[] = [];
     await runAgentStatus({ cwd: dir, scope: 'project', out: (c) => after.push(c) });
-    expect(after.join('')).toContain('not installed');
+    expect(after.join('')).toMatch(/installed\s+no/);
+  });
+
+  describe('status reports capture evidence, not just configuration', () => {
+    // Both live under this file's isolated NEXUSMEM_HOME and outlive a single test.
+    beforeEach(() => {
+      rmSync(agentEventLogPath(), { force: true });
+      rmSync(captureDropStatePath(), { force: true });
+    });
+
+    const status = async () => {
+      const out: string[] = [];
+      await runAgentStatus({ cwd: dir, scope: 'project', out: (c) => out.push(c) });
+      return out.join('');
+    };
+
+    const writeEvent = (minutesAgo: number) => {
+      const path = agentEventLogPath();
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(
+        path,
+        `${JSON.stringify(
+          redactAgentEvent({
+            agent: 'claude-code',
+            sessionId: 's1',
+            eventId: `e-${minutesAgo}`,
+            ts: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+            cwd: dir,
+            kind: 'command',
+            command: 'npm test',
+            outcome: 'fail',
+            exitCode: 1,
+            durationMs: 5,
+          } as AgentEvent),
+        )}\n`,
+      );
+    };
+
+    it('says an installed integration has never captured anything', async () => {
+      await runAgentInstall({ cwd: dir, scope: 'project', out: () => {} });
+
+      const text = await status();
+      expect(text).toMatch(/installed\s+yes/);
+      expect(text).toContain('never observed');
+    });
+
+    it('says healthy, and shows the last event, once capture has worked', async () => {
+      await runAgentInstall({ cwd: dir, scope: 'project', out: () => {} });
+      writeEvent(5);
+
+      const text = await status();
+      expect(text).toContain('healthy');
+      expect(text).toMatch(/last event\s+\d{4}-\d{2}-\d{2}T/);
+      expect(text).toContain('(command, fail)');
+    });
+
+    it('says stale when the last capture is older than the healthy window', async () => {
+      writeEvent(60 * 48);
+
+      expect(await status()).toContain('stale');
+    });
+
+    it('says failing, and names the reason, when events are being dropped', async () => {
+      recordCaptureDrop('unsupported-event');
+
+      const text = await status();
+      expect(text).toContain('failing');
+      expect(text).toContain('unsupported-event');
+    });
+
+    it('prints nothing about drops when there have been none', async () => {
+      writeEvent(5);
+
+      expect(await status()).not.toContain('drops');
+    });
   });
 
   it('says so when there is nothing to remove', async () => {

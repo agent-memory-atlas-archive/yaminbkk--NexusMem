@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import pc from 'picocolors';
+import { readCaptureStatus } from '../../agent/capture-health.js';
 import { agentHookCommands } from '../../agent/hook-command.js';
 import { recallFailure, recallSessionStart } from '../../agent/recall.js';
 import { markInjected, shouldInject } from '../../agent/recall-state.js';
@@ -100,16 +101,35 @@ export async function runAgentStatus(opts: AgentCommandOptions): Promise<number>
   const path = settingsPathFor(scope, opts.cwd);
   const status = agentHookStatus(await readSettings(path), agentHookCommands());
 
+  // Configuration and evidence are different questions: hooks can be installed
+  // and recording nothing, which is the failure this reports.
+  const capture = readCaptureStatus();
+  const CAPTURE_LABEL: Record<typeof capture.health, string> = {
+    healthy: pc.green('healthy'),
+    stale: pc.yellow('stale -- nothing captured in the last day'),
+    failing: pc.red('failing -- events are arriving but being dropped'),
+    'never-observed': pc.yellow('never observed -- no event has ever been captured'),
+    unknown: pc.yellow('unknown -- the event log could not be read'),
+  };
+
   out(
     [
-      `${pc.dim('settings')} ${path}`,
-      `${pc.dim('status  ')} ${
+      `${pc.dim('settings  ')} ${path}`,
+      `${pc.dim('installed ')} ${
         !status.installed
-          ? pc.yellow('not installed')
+          ? pc.yellow('no')
           : status.upToDate
-            ? pc.green('installed')
-            : pc.yellow('installed, but pointing at a different NexusMem -- run `nexusmem agent install` again')
+            ? pc.green('yes')
+            : pc.yellow('yes, but pointing at a different NexusMem -- run `nexusmem agent install` again')
       }`,
+      `${pc.dim('capture   ')} ${CAPTURE_LABEL[capture.health]}`,
+      ...(capture.lastEventAt
+        ? [`${pc.dim('last event')} ${capture.lastEventAt} ${pc.dim(`(${capture.lastEventKind}, ${capture.lastEventOutcome})`)}`]
+        : []),
+      // Only when it happened: a healthy install should print nothing about drops.
+      ...(capture.drops > 0
+        ? [`${pc.dim('drops     ')} ${capture.drops} ${pc.dim(`(last: ${capture.lastDropReason} at ${capture.lastDropAt})`)}`]
+        : []),
       '',
     ].join('\n'),
   );
