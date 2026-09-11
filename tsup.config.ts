@@ -1,8 +1,12 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  // The recorder runs once per shell command, so it is its own small bundle with no native deps.
-  entry: { 'cli/index': 'src/cli/index.ts', 'cli/recorder': 'src/cli/recorder.ts' },
+  // The recorder and the agent hook each run once per event, so they are their own small bundles with no native deps.
+  entry: {
+    'cli/index': 'src/cli/index.ts',
+    'cli/recorder': 'src/cli/recorder.ts',
+    'cli/agent-hook': 'src/adapters/claude-code/hook-entry.ts',
+  },
   splitting: false,
   format: ['esm'],
   platform: 'node',
