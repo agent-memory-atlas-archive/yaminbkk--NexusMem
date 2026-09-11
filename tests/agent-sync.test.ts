@@ -168,6 +168,21 @@ describe('sync: agent events', () => {
     expect(agentNodes()).toHaveLength(1);
   });
 
+  it('keys that cursor on the shared log, not on a vendor', async () => {
+    writeAgentLog([cmd(1, 'fail')]);
+    await runSync({ cwd: dir, full: false, rebuild: false, quiet: true, noEmbed: true });
+
+    const store = MemoryStore.open(resolveWorkspace(dir).dbPath);
+    try {
+      const sources = store.listSyncState(projectId).map((s) => s.source);
+      // One adapter's name must not end up owning the cursor every adapter walks.
+      expect(sources).toContain('agent');
+      expect(sources).not.toContain('agent:claude-code');
+    } finally {
+      store.close();
+    }
+  });
+
   it('ignores events from another repository', async () => {
     const other = realpathSync.native(mkdtempSync(join(tmpdir(), 'nexusmem-agent-other-')));
     try {

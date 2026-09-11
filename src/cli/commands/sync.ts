@@ -304,7 +304,13 @@ async function syncShell(
   return { totals, seen };
 }
 
-const AGENT_SOURCE = 'agent:claude-code';
+/**
+ * The cursor is over the agent event log, which is one stream shared by every
+ * adapter -- each event names its own agent, and each node's `source` becomes
+ * `agent:<vendor>`. Naming the cursor after one vendor would make a second
+ * adapter's events ride Claude's cursor.
+ */
+const AGENT_SOURCE = 'agent';
 
 /**
  * Ingest what a coding agent did: NexusMem's own agent hook writes the log,
