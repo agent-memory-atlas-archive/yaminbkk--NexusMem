@@ -33,6 +33,7 @@ import { runScanGithub } from './commands/scan-github.js';
 import { runScanSession, SCAN_SESSION_DEFAULT_MODEL } from './commands/scan-session.js';
 import { runScanShell } from './commands/scan-shell.js';
 import { runScanStructure } from './commands/scan-structure.js';
+import { runAgentInstall, runAgentRecall, runAgentRemove, runAgentStatus } from './commands/agent.js';
 import { runScrubSecrets } from './commands/scrub-secrets.js';
 import { runStale, STALE_DEFAULT_MODEL } from './commands/stale.js';
 import { runStatus } from './commands/status.js';
@@ -288,6 +289,43 @@ program
         yes: options.yes,
       }),
     )(),
+  );
+
+program
+  .command('agent')
+  .description('Manage the opt-in Claude Code hooks that record what the agent tried, and recall past failures')
+  .addCommand(
+    new Command('install')
+      .description("Install (or update) NexusMem's hooks in Claude Code settings")
+      .option('-C, --cwd <path>', 'repository path', process.cwd())
+      .option('--project', "write to this repository's .claude/settings.local.json instead of the user settings", false)
+      .action((options) =>
+        guard(() => runAgentInstall({ cwd: options.cwd, scope: options.project ? 'project' : 'user' }))(),
+      ),
+  )
+  .addCommand(
+    new Command('remove')
+      .description("Remove NexusMem's hooks from Claude Code settings, leaving any other tool's hooks alone")
+      .option('-C, --cwd <path>', 'repository path', process.cwd())
+      .option('--project', "use this repository's .claude/settings.local.json", false)
+      .action((options) =>
+        guard(() => runAgentRemove({ cwd: options.cwd, scope: options.project ? 'project' : 'user' }))(),
+      ),
+  )
+  .addCommand(
+    new Command('status')
+      .description('Show whether the Claude Code hooks are installed and current')
+      .option('-C, --cwd <path>', 'repository path', process.cwd())
+      .option('--project', "use this repository's .claude/settings.local.json", false)
+      .action((options) =>
+        guard(() => runAgentStatus({ cwd: options.cwd, scope: options.project ? 'project' : 'user' }))(),
+      ),
+  )
+  .addCommand(
+    new Command('recall')
+      .description('Read a hook payload on stdin and print matching failure history -- run by the hook, not by hand')
+      .option('--trigger <kind>', 'which hook fired', 'failure')
+      .action(() => guard(() => runAgentRecall())()),
   );
 
 program
