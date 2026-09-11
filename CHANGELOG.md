@@ -9,8 +9,11 @@ built from, matched by publish timestamp: `v0.1.0` → `67a4776`, `v0.1.1` → `
 
 ## [Unreleased]
 
-Planned as the 0.10.5 security release. Existing installs need action after upgrading — see
-"Action required" below.
+No unreleased changes yet.
+
+## [0.10.5] — 2026-09-11
+
+Security release. Existing installs need action after upgrading — see "Action required" below.
 
 ### Security
 
@@ -703,7 +706,11 @@ First public release.
   there is no local-model summarization pass, and the conversation collector has never been audited
   for the stale-node bug that was found and fixed in the docs collector.
 
-[Unreleased]: https://github.com/yaminbkk/NexusMem/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/yaminbkk/NexusMem/compare/v0.10.5...HEAD
+[0.10.5]: https://github.com/yaminbkk/NexusMem/compare/v0.10.4...v0.10.5
+[0.10.4]: https://github.com/yaminbkk/NexusMem/compare/v0.10.3...v0.10.4
+[0.10.3]: https://github.com/yaminbkk/NexusMem/compare/v0.10.2...v0.10.3
+[0.10.2]: https://github.com/yaminbkk/NexusMem/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/yaminbkk/NexusMem/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/yaminbkk/NexusMem/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/yaminbkk/NexusMem/compare/v0.9.0...v0.9.1
