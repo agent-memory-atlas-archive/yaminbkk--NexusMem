@@ -215,11 +215,11 @@ describe('nexusmem agent (CLI)', () => {
       expect(await status()).toContain('stale');
     });
 
-    it('says failing, and names the reason, when events are being dropped', async () => {
+    it('says degraded, and names the reason, when recent events were dropped', async () => {
       recordCaptureDrop('unsupported-event');
 
       const text = await status();
-      expect(text).toContain('failing');
+      expect(text).toContain('degraded');
       expect(text).toContain('unsupported-event');
     });
 

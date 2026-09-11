@@ -107,7 +107,7 @@ export async function runAgentStatus(opts: AgentCommandOptions): Promise<number>
   const CAPTURE_LABEL: Record<typeof capture.health, string> = {
     healthy: pc.green('healthy'),
     stale: pc.yellow('stale -- nothing captured in the last day'),
-    failing: pc.red('failing -- events are arriving but being dropped'),
+    degraded: pc.yellow('degraded -- recent events were dropped'),
     'never-observed': pc.yellow('never observed -- no event has ever been captured'),
     unknown: pc.yellow('unknown -- the event log could not be read'),
   };

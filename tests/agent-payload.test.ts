@@ -141,8 +141,18 @@ describe('parseHookPayload', () => {
 
     expect(outcome.ok).toBe(false);
     expect(outcome).toMatchObject({ reason });
-    // The reason travels alone: no payload text rides along with it.
+    // The codes travel alone: no payload text rides along with them.
     expect(JSON.stringify(outcome)).not.toContain('DB_PASSWORD');
+    expect(JSON.stringify(outcome)).not.toContain('no-such-dir');
+  });
+
+  it.each([
+    ['post-tool-use-failure', FAILING_BASH],
+    ['post-tool-use', SUCCEEDING_BASH],
+    ['session-start', { ...FAILING_BASH, hook_event_name: 'SessionStart' }],
+    ['other', { ...FAILING_BASH, hook_event_name: 'SomethingNewEntirely' }],
+  ])('normalizes the hook family to %s, never storing the vendor string', (family, payload) => {
+    expect(parseHookPayloadDetailed(JSON.stringify(payload), NOW)).toMatchObject({ family });
   });
 
   it.each([

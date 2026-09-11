@@ -21,11 +21,19 @@ import { parseAgentEventLine } from './record.js';
  * one line to the log and nothing else.
  */
 
-export type CaptureHealth = 'healthy' | 'stale' | 'failing' | 'never-observed' | 'unknown';
+export type CaptureHealth = 'healthy' | 'stale' | 'degraded' | 'never-observed' | 'unknown';
 
 /** Reasons the hook can record. A closed set, so no payload text can ever reach the file. */
 export const DROP_REASONS = ['unparsable-json', 'unsupported-event', 'unsupported-tool', 'missing-fields', 'write-failed'] as const;
 export type DropReason = (typeof DROP_REASONS)[number];
+
+/**
+ * Which family of hook the dropped event came from, as a normalized code --
+ * never the vendor's own string. Enough to tell "the tool payload changed"
+ * from "something is sending us an event we never asked for" while debugging.
+ */
+export const DROP_FAMILIES = ['post-tool-use', 'post-tool-use-failure', 'session-start', 'other'] as const;
+export type DropFamily = (typeof DROP_FAMILIES)[number];
 
 /** How recently capture must have worked to count as healthy. A day covers a normal working rhythm. */
 export const HEALTHY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -38,12 +46,14 @@ export interface CaptureStatus {
   lastEventOutcome: string | null;
   lastDropAt: string | null;
   lastDropReason: DropReason | null;
+  lastDropFamily: DropFamily | null;
   drops: number;
 }
 
 interface DropState {
   lastDropAt?: unknown;
   lastDropReason?: unknown;
+  lastDropFamily?: unknown;
   drops?: unknown;
 }
 
@@ -52,22 +62,35 @@ export function captureDropStatePath(): string {
 }
 
 const isDropReason = (value: unknown): value is DropReason => DROP_REASONS.includes(value as DropReason);
+const isDropFamily = (value: unknown): value is DropFamily => DROP_FAMILIES.includes(value as DropFamily);
 
 /**
  * Records that one event was thrown away. Called from the hook's failure
  * path, so it must never throw and never block the agent.
+ *
+ * The file is overwritten with the same four fields every time, so a hook
+ * dropping every event for a week cannot grow it. Nothing derived from the
+ * payload -- not a fragment of it, not a parser's exception message, which
+ * would quote the input -- is written here.
  */
-export function recordCaptureDrop(reason: DropReason, path = captureDropStatePath(), now = new Date()): void {
+export function recordCaptureDrop(
+  reason: DropReason,
+  family: DropFamily = 'other',
+  path = captureDropStatePath(),
+  now = new Date(),
+): void {
   try {
-    // Re-validated rather than trusted: this is the one field a caller could
-    // otherwise use to smuggle payload text into a file.
+    // Re-validated rather than trusted: these are the only fields a caller
+    // could otherwise use to smuggle payload text into a file.
     const safeReason: DropReason = isDropReason(reason) ? reason : 'missing-fields';
+    const safeFamily: DropFamily = isDropFamily(family) ? family : 'other';
     const previous = readDropState(path);
     const drops = typeof previous.drops === 'number' && Number.isFinite(previous.drops) ? previous.drops : 0;
-    writeFileSync(path, JSON.stringify({ lastDropAt: now.toISOString(), lastDropReason: safeReason, drops: drops + 1 }), {
-      encoding: 'utf8',
-      mode: 0o600,
-    });
+    writeFileSync(
+      path,
+      JSON.stringify({ lastDropAt: now.toISOString(), lastDropReason: safeReason, lastDropFamily: safeFamily, drops: drops + 1 }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
   } catch {
     // Health reporting is never worth failing a capture over.
   }
@@ -112,23 +135,39 @@ export function readCaptureStatus(opts: CaptureStatusOptions = {}): CaptureStatu
 
   const lastDropAt = typeof drop.lastDropAt === 'string' ? drop.lastDropAt : null;
   const lastDropReason = isDropReason(drop.lastDropReason) ? drop.lastDropReason : null;
+  const lastDropFamily = isDropFamily(drop.lastDropFamily) ? drop.lastDropFamily : null;
   const drops = typeof drop.drops === 'number' && Number.isFinite(drop.drops) ? drop.drops : 0;
-  const base = { lastDropAt, lastDropReason, drops };
+  const base = { lastDropAt, lastDropReason, lastDropFamily, drops };
 
   if (event === 'unreadable') {
     return { ...base, health: 'unknown', lastEventAt: null, lastEventKind: null, lastEventOutcome: null };
   }
+  // Only a recent drop is evidence of a problem now. An old one, with nothing
+  // since, says the machine has been quiet -- not that capture is broken.
+  const droppedRecently = lastDropAt !== null && now.getTime() - Date.parse(lastDropAt) <= HEALTHY_WINDOW_MS;
+
   if (event === null) {
-    // Drops with nothing ever captured is the signature of a payload shape we no longer understand.
-    return { ...base, health: drops > 0 ? 'failing' : 'never-observed', lastEventAt: null, lastEventKind: null, lastEventOutcome: null };
+    // Events arriving and being dropped, with none ever captured, is the
+    // signature of a payload shape this adapter no longer understands.
+    return {
+      ...base,
+      health: droppedRecently ? 'degraded' : 'never-observed',
+      lastEventAt: null,
+      lastEventKind: null,
+      lastEventOutcome: null,
+    };
   }
 
   const captured = { lastEventAt: event.at, lastEventKind: event.kind, lastEventOutcome: event.outcome };
   const eventAt = Date.parse(event.at);
   if (Number.isNaN(eventAt)) return { ...base, ...captured, health: 'unknown' };
 
-  // A drop after the last success means capture broke since it last worked.
-  if (lastDropAt && Date.parse(lastDropAt) > eventAt) return { ...base, ...captured, health: 'failing' };
+  // A recent drop after the last success: capture worked, then stopped
+  // working. A later successful capture outranks an earlier drop, which is
+  // what lets health return to healthy once events flow again.
+  if (droppedRecently && lastDropAt !== null && Date.parse(lastDropAt) > eventAt) {
+    return { ...base, ...captured, health: 'degraded' };
+  }
 
   return { ...base, ...captured, health: now.getTime() - eventAt <= HEALTHY_WINDOW_MS ? 'healthy' : 'stale' };
 }

@@ -139,7 +139,8 @@ describe('agent-hook process: success, failure and crash boundaries', () => {
     await run(`{"tool_input":{"command":"${RAW}"`);
 
     const after = readCaptureStatus();
-    expect(after).toMatchObject({ health: 'failing', lastDropReason: 'unparsable-json' });
+    // 'other': an unparsable payload says nothing about which hook sent it.
+    expect(after).toMatchObject({ health: 'degraded', lastDropReason: 'unparsable-json', lastDropFamily: 'other' });
     expect(after.drops).toBe(before + 1);
     expect(readFileSync(captureDropStatePath(), 'utf8')).not.toContain(SECRET);
   });
@@ -147,7 +148,8 @@ describe('agent-hook process: success, failure and crash boundaries', () => {
   it('distinguishes an unsupported tool from an unreadable payload', async () => {
     await run(payload({ tool_name: 'WebFetch' }));
 
-    expect(readCaptureStatus().lastDropReason).toBe('unsupported-tool');
+    expect(readCaptureStatus()).toMatchObject({ lastDropReason: 'unsupported-tool', lastDropFamily: 'post-tool-use-failure' });
+    expect(readFileSync(captureDropStatePath(), 'utf8')).not.toContain(SECRET);
   });
 
   it('records no new drop when capture succeeds, and reads back as healthy', async () => {

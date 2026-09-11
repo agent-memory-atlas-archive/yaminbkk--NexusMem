@@ -36,14 +36,15 @@ async function main(): Promise<void> {
   // Windows PowerShell can prepend a BOM to a redirected stdin; the parser trims it.
   const outcome = parseHookPayloadDetailed(Buffer.concat(chunks).toString('utf8'), new Date().toISOString());
   if (!outcome.ok) {
-    // A dropped event leaves no other trace, so record why -- a code, never the payload.
-    recordCaptureDrop(outcome.reason, dropStatePath());
+    // A dropped event leaves no other trace, so record why -- two normalized
+    // codes and a timestamp, never the payload or a parser's message.
+    recordCaptureDrop(outcome.reason, outcome.family, dropStatePath());
     return drop();
   }
   try {
     await appendAgentEvent(outcome.event, arg('--log') ?? agentEventLogPath());
   } catch {
-    recordCaptureDrop('write-failed', dropStatePath());
+    recordCaptureDrop('write-failed', outcome.family, dropStatePath());
     return drop();
   }
   process.exit(0);

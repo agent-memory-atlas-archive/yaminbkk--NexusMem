@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,11 +8,13 @@ import { HEALTHY_WINDOW_MS, readCaptureStatus, recordCaptureDrop } from '../src/
 /**
  * Capture health has to separate "quiet because nobody was coding" from
  * "quiet because the payload shape changed and every event is being dropped".
- * Installed configuration proves neither.
+ * Installed configuration proves neither, and neither does silence on its own.
  */
 
 const NOW = new Date('2026-09-12T12:00:00.000Z');
 const SECRET = 'health-s3cret-VALUE';
+const minutesAgo = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
+const WINDOW_MINUTES = HEALTHY_WINDOW_MS / 60_000;
 
 let dir: string;
 let logPath: string;
@@ -20,12 +22,12 @@ let dropPath: string;
 
 const paths = () => ({ logPath, dropStatePath: dropPath, now: NOW });
 
-function writeEvent(minutesAgo: number, over: Record<string, unknown> = {}): void {
+function writeEvent(minutes: number, over: Record<string, unknown> = {}): void {
   const event = redactAgentEvent({
     agent: 'claude-code',
     sessionId: 's1',
-    eventId: `e-${minutesAgo}`,
-    ts: new Date(NOW.getTime() - minutesAgo * 60_000).toISOString(),
+    eventId: `e-${minutes}`,
+    ts: minutesAgo(minutes).toISOString(),
     cwd: 'D:/repo',
     kind: 'command',
     command: `psql postgres://app:${SECRET}@db/app`,
@@ -54,7 +56,7 @@ describe('readCaptureStatus', () => {
     const status = readCaptureStatus(paths());
 
     expect(status).toMatchObject({ health: 'healthy', lastEventKind: 'command', lastEventOutcome: 'fail', drops: 0 });
-    expect(status.lastEventAt).toBe(new Date(NOW.getTime() - 10 * 60_000).toISOString());
+    expect(status.lastEventAt).toBe(minutesAgo(10).toISOString());
     expect(JSON.stringify(status)).not.toContain(SECRET);
     expect(JSON.stringify(status)).not.toContain('psql');
   });
@@ -64,65 +66,91 @@ describe('readCaptureStatus', () => {
   });
 
   it('reports stale once the last event falls outside the healthy window', () => {
-    writeEvent(HEALTHY_WINDOW_MS / 60_000 + 60);
+    writeEvent(WINDOW_MINUTES + 60);
 
     expect(readCaptureStatus(paths()).health).toBe('stale');
   });
 
-  it('reports failing when events are being dropped and none has ever been captured', () => {
-    recordCaptureDrop('unsupported-event', dropPath, new Date(NOW.getTime() - 60_000));
+  it('reports degraded when events are arriving, being dropped, and none was ever captured', () => {
+    recordCaptureDrop('unsupported-event', 'post-tool-use-failure', dropPath, minutesAgo(1));
 
     expect(readCaptureStatus(paths())).toMatchObject({
-      health: 'failing',
+      health: 'degraded',
       lastEventAt: null,
       lastDropReason: 'unsupported-event',
+      lastDropFamily: 'post-tool-use-failure',
       drops: 1,
     });
   });
 
-  it('reports failing when capture worked before but has been dropping since', () => {
+  it('reports degraded when capture worked before but has been dropping since', () => {
     writeEvent(30);
-    recordCaptureDrop('missing-fields', dropPath, new Date(NOW.getTime() - 60_000));
+    recordCaptureDrop('missing-fields', 'post-tool-use', dropPath, minutesAgo(1));
 
     const status = readCaptureStatus(paths());
-    expect(status.health).toBe('failing');
-    // The last success is still reported: that is what tells you when it broke.
-    expect(status.lastEventAt).not.toBeNull();
+    expect(status.health).toBe('degraded');
+    // The last success is still reported: that is what says when it broke.
+    expect(status.lastEventAt).toBe(minutesAgo(30).toISOString());
   });
 
-  it('stays healthy when the last drop predates the last successful capture', () => {
-    recordCaptureDrop('unsupported-tool', dropPath, new Date(NOW.getTime() - 120 * 60_000));
-    writeEvent(10);
+  it('returns to healthy once a valid event arrives after a drop', () => {
+    recordCaptureDrop('unparsable-json', 'other', dropPath, minutesAgo(30));
+    writeEvent(5);
 
-    expect(readCaptureStatus(paths()).health).toBe('healthy');
+    const status = readCaptureStatus(paths());
+    expect(status.health).toBe('healthy');
+    // The drop is still counted; it is simply no longer the newest evidence.
+    expect(status.drops).toBe(1);
   });
 
-  it('counts repeated drops', () => {
-    recordCaptureDrop('unparsable-json', dropPath, NOW);
-    recordCaptureDrop('unparsable-json', dropPath, NOW);
+  it('does not call capture broken just because an old drop was never followed by anything', () => {
+    recordCaptureDrop('unsupported-tool', 'post-tool-use', dropPath, minutesAgo(WINDOW_MINUTES + 600));
 
-    expect(readCaptureStatus(paths()).drops).toBe(2);
+    // Silence plus stale evidence is not proof of a break.
+    expect(readCaptureStatus(paths())).toMatchObject({ health: 'never-observed', drops: 1 });
+  });
+
+  it('reports stale, not degraded, when both the last event and the last drop are old', () => {
+    writeEvent(WINDOW_MINUTES + 300);
+    recordCaptureDrop('missing-fields', 'post-tool-use', dropPath, minutesAgo(WINDOW_MINUTES + 120));
+
+    expect(readCaptureStatus(paths()).health).toBe('stale');
+  });
+
+  it('counts repeated drops without letting the state file grow', () => {
+    recordCaptureDrop('unparsable-json', 'other', dropPath, NOW);
+    const afterFirst = statSync(dropPath).size;
+    for (let i = 0; i < 500; i += 1) recordCaptureDrop('unparsable-json', 'other', dropPath, NOW);
+
+    const status = readCaptureStatus(paths());
+    expect(status.drops).toBe(501);
+    // Same four fields every time: a hook dropping every event cannot grow this.
+    expect(statSync(dropPath).size).toBeLessThanOrEqual(afterFirst + 4);
   });
 
   it('treats a corrupt drop-state file as no evidence rather than failing', () => {
     writeFileSync(dropPath, '{ not json');
     writeEvent(10);
 
-    expect(readCaptureStatus(paths())).toMatchObject({ health: 'healthy', lastDropReason: null, drops: 0 });
+    expect(readCaptureStatus(paths())).toMatchObject({ health: 'healthy', lastDropReason: null, lastDropFamily: null, drops: 0 });
   });
 
-  it('ignores a drop reason that is not one of the known codes', () => {
-    writeFileSync(dropPath, JSON.stringify({ lastDropAt: NOW.toISOString(), lastDropReason: `leaked ${SECRET}`, drops: 1 }));
+  it('ignores a reason or family that is not one of the known codes', () => {
+    writeFileSync(
+      dropPath,
+      JSON.stringify({ lastDropAt: NOW.toISOString(), lastDropReason: `leaked ${SECRET}`, lastDropFamily: SECRET, drops: 1 }),
+    );
 
     const status = readCaptureStatus(paths());
     expect(status.lastDropReason).toBeNull();
+    expect(status.lastDropFamily).toBeNull();
     expect(JSON.stringify(status)).not.toContain(SECRET);
   });
 
-  it('never writes anything but a known code, even when handed something else', () => {
-    recordCaptureDrop(`unparsable-json ${SECRET}` as never, dropPath, NOW);
+  it('never writes anything but known codes, even when handed something else', () => {
+    recordCaptureDrop(`unparsable-json ${SECRET}` as never, `family ${SECRET}` as never, dropPath, NOW);
 
-    expect(readCaptureStatus(paths()).lastDropReason).toBe('missing-fields');
+    expect(readCaptureStatus(paths())).toMatchObject({ lastDropReason: 'missing-fields', lastDropFamily: 'other' });
     expect(readFileSync(dropPath, 'utf8')).not.toContain(SECRET);
   });
 

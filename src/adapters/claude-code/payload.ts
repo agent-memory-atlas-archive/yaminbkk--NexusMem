@@ -1,4 +1,4 @@
-import type { DropReason } from '../../agent/capture-health.js';
+import type { DropFamily, DropReason } from '../../agent/capture-health.js';
 import { type AgentEvent, type AgentOutcome, type RawAgentEvent, redactAgentEvent } from '../../agent/event.js';
 
 /**
@@ -80,7 +80,16 @@ export function parseSessionStart(rawJson: string): SessionStartPayload | null {
  * a payload shape this adapter no longer understands. The reason is a code
  * from the core's closed set; no payload text ever travels with it.
  */
-export type ParseOutcome = { ok: true; event: AgentEvent } | { ok: false; reason: DropReason };
+export type ParseOutcome = { ok: true; event: AgentEvent; family: DropFamily } | { ok: false; reason: DropReason; family: DropFamily };
+
+/** Vendor event name to a normalized family code; the vendor's own string is never stored. */
+const FAMILY_BY_EVENT: Record<string, DropFamily> = {
+  PostToolUse: 'post-tool-use',
+  PostToolUseFailure: 'post-tool-use-failure',
+  SessionStart: 'session-start',
+};
+
+const familyOf = (event: string | undefined): DropFamily => (event ? (FAMILY_BY_EVENT[event] ?? 'other') : 'other');
 
 /** Thin wrapper: the common callers only care whether there is an event. */
 export function parseHookPayload(rawJson: string, now: string): AgentEvent | null {
@@ -94,17 +103,19 @@ export function parseHookPayloadDetailed(rawJson: string, now: string): ParseOut
     // A JSON.parse error message quotes its input, i.e. the raw command; never let it escape.
     payload = JSON.parse(rawJson.trim());
   } catch {
-    return { ok: false, reason: 'unparsable-json' };
+    // Nothing about the input is known here, and a parser's own message would quote it.
+    return { ok: false, reason: 'unparsable-json', family: 'other' };
   }
-  if (typeof payload !== 'object' || payload === null) return { ok: false, reason: 'unparsable-json' };
+  if (typeof payload !== 'object' || payload === null) return { ok: false, reason: 'unparsable-json', family: 'other' };
   const p = payload as HookPayload;
 
   const event = str(p.hook_event_name);
+  const family = familyOf(event);
   const sessionId = str(p.session_id);
   const eventId = str(p.tool_use_id);
   const toolName = str(p.tool_name);
-  if (event !== 'PostToolUse' && event !== 'PostToolUseFailure') return { ok: false, reason: 'unsupported-event' };
-  if (!sessionId || !eventId || !toolName) return { ok: false, reason: 'missing-fields' };
+  if (event !== 'PostToolUse' && event !== 'PostToolUseFailure') return { ok: false, reason: 'unsupported-event', family };
+  if (!sessionId || !eventId || !toolName) return { ok: false, reason: 'missing-fields', family };
 
   const failed = event === 'PostToolUseFailure';
   const interrupted = failed && p.is_interrupt === true;
@@ -123,7 +134,7 @@ export function parseHookPayloadDetailed(rawJson: string, now: string): ParseOut
 
   if (toolName === 'Bash') {
     const command = str(p.tool_input?.command);
-    if (!command) return { ok: false, reason: 'missing-fields' };
+    if (!command) return { ok: false, reason: 'missing-fields', family };
     const error = failed ? parseError(str(p.error) ?? '') : null;
     const draft: RawAgentEvent = {
       ...base,
@@ -133,15 +144,15 @@ export function parseHookPayloadDetailed(rawJson: string, now: string): ParseOut
       exitCode: failed ? error?.exitCode ?? null : 0,
       ...(error?.signature ? { errorSignature: error.signature } : {}),
     };
-    return { ok: true, event: redactAgentEvent(draft) };
+    return { ok: true, event: redactAgentEvent(draft), family };
   }
 
   if (EDIT_TOOLS.has(toolName)) {
     // Only the path: an edit's payload also holds the file's old and new content, which is never recorded.
     const filePath = str(p.tool_input?.file_path) ?? str(p.tool_input?.notebook_path);
-    if (!filePath) return { ok: false, reason: 'missing-fields' };
-    return { ok: true, event: redactAgentEvent({ ...base, kind: 'edit', filePath, exitCode: null }) };
+    if (!filePath) return { ok: false, reason: 'missing-fields', family };
+    return { ok: true, event: redactAgentEvent({ ...base, kind: 'edit', filePath, exitCode: null }), family };
   }
 
-  return { ok: false, reason: 'unsupported-tool' };
+  return { ok: false, reason: 'unsupported-tool', family };
 }
