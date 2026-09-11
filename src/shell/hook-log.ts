@@ -101,36 +101,47 @@ export async function readHookLog(path: string, fromLine: number): Promise<ReadH
   return { entries, totalLines: lines.length, shellsSeen };
 }
 
-function sanitizeLine(line: string): string {
-  if (line.trim().length === 0) return line;
+function sanitizeLine(line: string): { line: string; legacy: boolean } {
+  if (line.trim().length === 0) return { line, legacy: false };
   let obj: unknown;
   try {
     obj = JSON.parse(line);
   } catch {
-    return redact(line).text; // a torn line is still text a secret can sit in
+    return { line: redact(line).text, legacy: false }; // a torn line is still text a secret can sit in
   }
   const o = obj as Record<string, unknown> | null;
-  if (typeof o !== 'object' || o === null || typeof o.command !== 'string') return redact(line).text;
+  if (typeof o !== 'object' || o === null || typeof o.command !== 'string') return { line: redact(line).text, legacy: false };
 
+  // The recorder stamps commandHash on every line it writes; a line without one came from an
+  // older hook that appended the command raw. Stamping it here makes the next pass count only new ones.
+  const legacy = typeof o.commandHash !== 'string';
   const raw = o.command;
   const { text } = redact(raw);
-  if (text === raw) return line;
-  const commandHash = typeof o.commandHash === 'string' ? o.commandHash : sha256Hex(raw).slice(0, 12);
-  return JSON.stringify({ ...o, command: text, commandHash });
+  if (!legacy && text === raw) return { line, legacy };
+  const commandHash = legacy ? sha256Hex(raw).slice(0, 12) : o.commandHash;
+  return { line: JSON.stringify({ ...o, command: text, commandHash }), legacy };
 }
 
-/** Line endings are kept byte-for-byte, so a log with nothing to redact comes back identical. */
-function sanitizeText(raw: string): { text: string; changed: number } {
+/** Line endings are kept byte-for-byte, so a log with nothing to change comes back identical. */
+function sanitizeText(raw: string): { text: string; changed: number; legacy: number } {
   const parts = raw.split(/(\r?\n)/);
   let changed = 0;
+  let legacy = 0;
   for (let i = 0; i < parts.length; i += 2) {
     const next = sanitizeLine(parts[i]!);
-    if (next !== parts[i]) {
-      parts[i] = next;
+    if (next.legacy) legacy += 1;
+    if (next.line !== parts[i]) {
+      parts[i] = next.line;
       changed += 1;
     }
   }
-  return { text: parts.join(''), changed };
+  return { text: parts.join(''), changed, legacy };
+}
+
+export interface SanitizeHookLogResult {
+  linesChanged: number;
+  /** Lines an outdated (pre-recorder) hook wrote raw since the last pass. */
+  legacyLines: number;
 }
 
 async function readRange(path: string, start: number, end: number): Promise<Buffer> {
@@ -147,24 +158,26 @@ async function readRange(path: string, start: number, end: number): Promise<Buff
 const RENAME_BUSY = new Set(['EPERM', 'EACCES', 'EBUSY']);
 
 /**
- * Redact every command in the hook log in place. The installed hooks write
- * raw commands (they cannot run the redactor per prompt), so this is what
- * keeps secrets from staying in the log: `sync` runs it after every read,
- * `scrub-secrets` on demand. Line count and order are preserved exactly --
- * every project's cursor into this shared log is a line count.
+ * Redact every command in the hook log in place. Current hooks write through
+ * the recorder (shell/recorder.ts), which never persists a raw command; this
+ * cleans up after hooks installed before it, and after pre-0.10.5 logs.
+ * `sync` runs it after every read, `scrub-secrets` on demand. Line count and
+ * order are preserved exactly -- every project's cursor into this shared log
+ * is a line count. The temp file only ever holds already-redacted text.
  */
-export async function sanitizeHookLog(path: string, opts: { dryRun?: boolean } = {}): Promise<{ linesChanged: number }> {
+export async function sanitizeHookLog(path: string, opts: { dryRun?: boolean } = {}): Promise<SanitizeHookLogResult> {
   let raw: Buffer;
   try {
     raw = await readFile(path);
   } catch {
-    return { linesChanged: 0 };
+    return { linesChanged: 0, legacyLines: 0 };
   }
   const first = sanitizeText(raw.toString('utf8'));
-  if (first.changed === 0 || opts.dryRun) return { linesChanged: first.changed };
+  if (first.changed === 0 || opts.dryRun) return { linesChanged: first.changed, legacyLines: first.legacy };
 
   const tmp = `${path}.${process.pid}.scrub.tmp`;
   let linesChanged = first.changed;
+  let legacyLines = first.legacy;
   try {
     await writeFile(tmp, first.text, { encoding: 'utf8', mode: 0o600 });
     let consumed = raw.length;
@@ -175,6 +188,7 @@ export async function sanitizeHookLog(path: string, opts: { dryRun?: boolean } =
         const extra = sanitizeText((await readRange(path, consumed, size)).toString('utf8'));
         await appendFile(tmp, extra.text, 'utf8');
         linesChanged += extra.changed;
+        legacyLines += extra.legacy;
         consumed = size;
       }
       try {
@@ -190,10 +204,10 @@ export async function sanitizeHookLog(path: string, opts: { dryRun?: boolean } =
     await unlink(tmp).catch(() => {});
     throw err;
   }
-  return { linesChanged };
+  return { linesChanged, legacyLines };
 }
 
-/** Append one entry. Exposed for tests; the real writer is the installed PowerShell hook. */
+/** Append one entry. Exposed for tests; the real writer is the shell recorder (shell/recorder.ts). */
 export async function appendHookLogEntry(path: string, entry: HookLogEntry): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await appendFile(path, `${JSON.stringify(entry)}\n`, 'utf8');

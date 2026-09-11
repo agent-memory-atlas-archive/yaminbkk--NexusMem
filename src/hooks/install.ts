@@ -13,6 +13,7 @@ import * as zsh from './zsh.js';
 export type ShellKind = 'pwsh' | 'bash' | 'zsh';
 
 interface ShellHookModule {
+  renderHookSnippet(logPath: string): string;
   isHookInstalled(profileContent: string): boolean;
   stripHookSnippet(profileContent: string): string;
   upsertHookSnippet(profileContent: string, logPath: string): string;
@@ -21,18 +22,21 @@ interface ShellHookModule {
 
 const SHELL_MODULES: Record<ShellKind, ShellHookModule> = {
   pwsh: {
+    renderHookSnippet: (logPath) => powershell.renderHookSnippet(logPath),
     isHookInstalled: powershell.isHookInstalled,
     stripHookSnippet: powershell.stripHookSnippet,
     upsertHookSnippet: powershell.upsertHookSnippet,
     resolveProfilePath: async (override) => override ?? (await resolvePowerShellProfilePath()),
   },
   bash: {
+    renderHookSnippet: (logPath) => bash.renderHookSnippet(logPath),
     isHookInstalled: bash.isHookInstalled,
     stripHookSnippet: bash.stripHookSnippet,
     upsertHookSnippet: bash.upsertHookSnippet,
     resolveProfilePath: async (override) => override ?? resolveBashProfilePath(),
   },
   zsh: {
+    renderHookSnippet: (logPath) => zsh.renderHookSnippet(logPath),
     isHookInstalled: zsh.isHookInstalled,
     stripHookSnippet: zsh.stripHookSnippet,
     upsertHookSnippet: zsh.upsertHookSnippet,
@@ -104,8 +108,18 @@ export async function removeHook(target: HookTarget): Promise<{ changed: boolean
   return { changed: true };
 }
 
-export async function hookStatus(target: HookTarget): Promise<{ installed: boolean }> {
+/**
+ * `upToDate` is false when the installed block differs from what `hook install` would write now --
+ * notably a block from before 0.10.5, which appends the raw command straight to the log file.
+ */
+export async function hookStatus(target: HookTarget): Promise<{ installed: boolean; upToDate: boolean }> {
   const mod = SHELL_MODULES[target.shell];
-  const current = await readProfile(target.profilePath);
-  return { installed: mod.isHookInstalled(current) };
+  const current = (await readProfile(target.profilePath)).replace(/\r\n/g, '\n');
+  const installed = mod.isHookInstalled(current);
+  const expected = mod.renderHookSnippet(target.logPath).trimEnd();
+  const endMarker = expected.slice(expected.lastIndexOf('\n') + 1);
+  const start = current.indexOf(expected.slice(0, expected.indexOf('\n')));
+  const end = current.indexOf(endMarker, start);
+  const upToDate = installed && start !== -1 && end !== -1 && current.slice(start, end + endMarker.length) === expected;
+  return { installed, upToDate };
 }

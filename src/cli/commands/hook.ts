@@ -69,7 +69,13 @@ export async function runHookStatus(opts: HookOptions): Promise<number> {
       `${pc.dim('shell  ')} ${target.shell}`,
       `${pc.dim('profile')} ${target.profilePath}`,
       `${pc.dim('log    ')} ${target.logPath}`,
-      `${pc.dim('status ')} ${result.installed ? pc.green('installed') : pc.yellow('not installed')}`,
+      `${pc.dim('status ')} ${
+        !result.installed
+          ? pc.yellow('not installed')
+          : result.upToDate
+            ? pc.green('installed')
+            : pc.yellow('installed, OUTDATED -- run `nexusmem hook install` again (hooks before 0.10.5 write commands to disk unredacted)')
+      }`,
       '',
     ].join('\n'),
   );

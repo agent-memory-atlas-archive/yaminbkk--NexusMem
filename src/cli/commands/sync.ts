@@ -259,11 +259,17 @@ async function syncShell(
     hookCursor: store.getSyncCursor(projectId, 'shell:pwsh-hook'),
   });
 
-  // The installed hooks log commands raw; redact the shared log now that it has been read.
+  // Hooks installed before 0.10.5 still log commands raw; redact the shared log now that it has been read.
   if (existsSync(hookLogPath())) {
     try {
-      const { linesChanged } = await sanitizeHookLog(hookLogPath());
+      const { linesChanged, legacyLines } = await sanitizeHookLog(hookLogPath());
       if (linesChanged > 0) log(`  ${pc.dim(`shell hook log: redacted ${linesChanged} line(s)`)}`);
+      if (legacyLines > 0) {
+        log(
+          `${pc.yellow('shell')} ${legacyLines} hook-log line(s) were written by an outdated NexusMem shell hook that stores commands ` +
+            'unredacted until a sync -- run `nexusmem hook install` again in each shell',
+        );
+      }
     } catch (err) {
       log(`${pc.yellow('shell')} could not redact the hook log (${(err as Error).message}) -- run \`nexusmem scrub-secrets --yes\``);
     }

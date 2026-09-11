@@ -39,27 +39,36 @@ afterEach(() => {
 });
 
 describe('sanitizeHookLog', () => {
-  it('redacts secret-bearing commands and keeps line count, order, CRLF and every other line byte-for-byte', async () => {
+  it('redacts secrets, stamps commandHash on legacy lines, and keeps line count, order, CRLF and recorder lines byte-for-byte', async () => {
+    const recorderLine = JSON.stringify({
+      ts: '2026-09-10T00:59:00.000Z',
+      cwd: REPO,
+      exitCode: 0,
+      durationMs: 1,
+      command: 'git status',
+      shell: 'pwsh-hook',
+      commandHash: sha256Hex('git status').slice(0, 12),
+    });
     const lines = [
-      line('npm test'),
-      line('export DB_PASSWORD=my-secret'),
-      line('psql postgres://app:my-secret@db/app'),
+      line('npm test'), // legacy hook, no secret
+      line('export DB_PASSWORD=my-secret'), // legacy hook, secret
+      line('psql postgres://app:my-secret@db/app'), // legacy hook, secret
       '{"ts": "torn-without-secret',
-      line('git status'),
+      recorderLine, // already written by the recorder
     ];
-    // PowerShell's Add-Content writes CRLF.
+    // Pre-recorder PowerShell hooks wrote CRLF via Add-Content.
     writeFileSync(logPath, `${lines.join('\r\n')}\r\n`);
 
     const result = await sanitizeHookLog(logPath);
 
-    expect(result.linesChanged).toBe(2);
+    expect(result).toEqual({ linesChanged: 3, legacyLines: 3 });
     const after = readFileSync(logPath, 'utf8');
     expect(after).not.toContain('my-secret');
     const afterLines = after.split('\r\n');
     expect(afterLines).toHaveLength(lines.length + 1);
-    expect(afterLines[0]).toBe(lines[0]);
     expect(afterLines[3]).toBe(lines[3]);
     expect(afterLines[4]).toBe(lines[4]);
+    expect(JSON.parse(afterLines[0]!)).toMatchObject({ command: 'npm test', commandHash: sha256Hex('npm test').slice(0, 12) });
     expect(JSON.parse(afterLines[1]!)).toMatchObject({
       command: 'export DB_PASSWORD: [redacted]',
       commandHash: sha256Hex('export DB_PASSWORD=my-secret').slice(0, 12),
@@ -79,19 +88,19 @@ describe('sanitizeHookLog', () => {
     await sanitizeHookLog(logPath);
     const once = readFileSync(logPath);
 
-    expect(await sanitizeHookLog(logPath)).toEqual({ linesChanged: 0 });
+    expect(await sanitizeHookLog(logPath)).toEqual({ linesChanged: 0, legacyLines: 0 });
     expect(readFileSync(logPath).equals(once)).toBe(true);
   });
 
   it('dryRun counts without writing', async () => {
     const raw = `${line('export DB_PASSWORD=my-secret')}\n`;
     writeFileSync(logPath, raw);
-    expect(await sanitizeHookLog(logPath, { dryRun: true })).toEqual({ linesChanged: 1 });
+    expect(await sanitizeHookLog(logPath, { dryRun: true })).toEqual({ linesChanged: 1, legacyLines: 1 });
     expect(readFileSync(logPath, 'utf8')).toBe(raw);
   });
 
   it('is a no-op for a missing log and leaves no temp file behind', async () => {
-    expect(await sanitizeHookLog(logPath)).toEqual({ linesChanged: 0 });
+    expect(await sanitizeHookLog(logPath)).toEqual({ linesChanged: 0, legacyLines: 0 });
     expect(existsSync(logPath)).toBe(false);
   });
 

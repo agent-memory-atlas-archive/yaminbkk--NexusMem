@@ -36,8 +36,14 @@ export async function runScrubSecrets(opts: ScrubSecretsOptions): Promise<number
     out(`  ${pc.dim('not present on this machine')}\n`);
   } else {
     try {
-      const { linesChanged } = await sanitizeHookLog(logPath, { dryRun: !opts.yes });
+      const { linesChanged, legacyLines } = await sanitizeHookLog(logPath, { dryRun: !opts.yes });
       out(`  ${linesChanged} line(s) ${opts.yes ? 'redacted' : 'to redact'}\n`);
+      if (legacyLines > 0) {
+        out(
+          `  ${pc.yellow(`${legacyLines} line(s) came from an outdated shell hook`)} that writes commands unredacted -- ` +
+            'run `nexusmem hook install` again in each shell (see `nexusmem hook status`)\n',
+        );
+      }
     } catch (err) {
       incomplete = true;
       out(`  ${pc.red('could not redact the hook log')}: ${(err as Error).message}\n`);
