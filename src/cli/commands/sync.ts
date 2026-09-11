@@ -856,7 +856,11 @@ export async function runSync(opts: SyncOptions): Promise<number> {
       // conversation_turn/session_summary nodes together, so it only makes
       // sense once whatever this run ingested is already in the store.
       const linkStats = correlateFailures(store, projectId);
-      linkLine = `  ${pc.dim(`chains: ${linkStats.failuresExamined} failure(s) examined, ${linkStats.linkedByRetry} linked by retry, ${linkStats.linkedByDiscussion} by discussion`)}\n`;
+      // Shown only when it happened: a pass that nothing explains is a decision
+      // not to claim a fix, and a silent decision is indistinguishable from a miss.
+      const unexplained =
+        linkStats.unexplainedRetries > 0 ? `, ${linkStats.unexplainedRetries} passed again with nothing edited (not linked)` : '';
+      linkLine = `  ${pc.dim(`chains: ${linkStats.failuresExamined} failure(s) examined, ${linkStats.linkedByRetry} linked by retry, ${linkStats.linkedByDiscussion} by discussion${unexplained}`)}\n`;
     }
 
     store.markSynced(projectId);

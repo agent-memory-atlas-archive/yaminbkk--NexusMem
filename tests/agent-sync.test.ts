@@ -168,6 +168,18 @@ describe('sync: agent events', () => {
     expect(agentNodes()).toHaveLength(1);
   });
 
+  it('reports a pass that nothing explains rather than silently not linking it', async () => {
+    // No edit between the failure and the pass: real pass, unexplained cause.
+    writeAgentLog([cmd(1, 'fail'), cmd(20, 'ok')]);
+
+    const chunks: string[] = [];
+    await runSync({ cwd: dir, full: false, rebuild: false, quiet: true, noEmbed: true, out: (c) => chunks.push(c) });
+
+    const out = stripAnsi(chunks.join(''));
+    expect(out).toContain('0 linked by retry');
+    expect(out).toContain('1 passed again with nothing edited (not linked)');
+  });
+
   it('keys that cursor on the shared log, not on a vendor', async () => {
     writeAgentLog([cmd(1, 'fail')]);
     await runSync({ cwd: dir, full: false, rebuild: false, quiet: true, noEmbed: true });
