@@ -9,7 +9,31 @@ built from, matched by publish timestamp: `v0.1.0` → `67a4776`, `v0.1.1` → `
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Added
+
+- Ambient memory for coding agents: `nexusmem agent install` wires NexusMem into Claude Code's own
+  hooks, so what the agent tried is recorded and what it already tried is surfaced without anyone
+  asking for either.
+  - **Capture.** Every Bash command Claude Code runs, and every file it edits, is recorded with its
+    outcome. Commands the agent runs are invisible to the shell hook, which only sees interactive
+    prompts — this is what makes an agent's own dead ends memorable at all. Edits are attached to the
+    command that follows them, so an attempt reads "edited a.ts, then npm test failed".
+  - **Recall on failure.** When a command fails, NexusMem injects a short note only if that exact
+    command failed here before, naming what was edited each time and what eventually fixed it. No
+    match means no output.
+  - **Session start.** Starts a background sync, then names commands that failed with no recorded
+    fix, in about 150 tokens. A repository with nothing unresolved gets nothing.
+  - Budgeted: at most one note per failure per session, five per session, and no embedding, model or
+    network call on the path. If NexusMem is missing, broken or slow, the hook prints nothing and
+    exits 0, and the agent carries on.
+  - Commands the agent ran are redacted by the same recorder pattern as the shell hook: the raw text
+    is hashed and redacted in memory, and only redacted text is written. Correlation matches on the
+    hash, so two commands that differ only by a secret are never treated as the same command.
+  - `nexusmem agent status` and `nexusmem agent remove` manage the hooks; `remove` takes only
+    NexusMem's own entries. Installs into user settings by default, or `--project` for
+    `.claude/settings.local.json`, never a settings file a team would commit.
+- Agent actions are ingested by every `sync`, and their arrival now runs failure→fix correlation
+  without `--link-failures`.
 
 ## [0.10.5] — 2026-09-11
 

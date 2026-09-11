@@ -102,6 +102,36 @@ It wraps your existing PowerShell prompt rather than replacing it, is idempotent
 Exit codes are what make this worth installing. A failed command is a stronger signal than a
 successful one, and without the hook there is no way to tell them apart.
 
+## Optional: what your coding agent tried
+
+The shell hook above only sees commands *you* type. Commands your coding agent runs go through its
+own tool, so they never reach an interactive prompt — which means the dead ends an agent hits, the
+thing worth remembering most, were exactly what NexusMem could not see.
+
+```bash
+nexusmem agent install     # writes Claude Code's hooks; --project keeps it to this repo
+```
+
+Restart Claude Code afterwards. From then on, in any repository NexusMem has been run in:
+
+- **it records** each command the agent runs, its outcome, and the files edited just before it, so an
+  attempt reads "edited `a.ts`, then `npm test` failed" rather than "`npm test` failed twice";
+- **when a command fails**, it says — to the agent, at that moment — whether that exact command has
+  failed here before, what was edited each time, and what eventually fixed it;
+- **when a session starts**, it syncs in the background and names commands that failed with no
+  recorded fix.
+
+It stays quiet the rest of the time. There is no match, no message; at most one note per failure per
+session and five per session; no embedding, model or network call on that path. If NexusMem is
+missing or broken the hook prints nothing and exits 0, and the agent carries on as if it were not
+installed.
+
+Commands are redacted before they are written, exactly like the shell hook, and matching is done on
+a hash of the raw command so two commands differing only by a secret are never confused.
+
+`nexusmem agent status` shows whether the hooks are installed; `nexusmem agent remove` takes out
+NexusMem's own entries and leaves any other tool's hooks alone.
+
 ## Failure → fix chains (opt-in)
 
 ```bash
@@ -436,7 +466,8 @@ PowerShell exit-code hook), `hook git install|remove|status` (a git pre-commit h
 `precheck` before each commit), and `hook git-post install|remove|status` (a git post-commit hook
 that runs a full `sync`, including embedding, in the background after each commit — detached, so it
 never makes `git commit` itself wait; a burst of commits coalesces into one sync via `sync --auto`'s
-lock instead of piling up).
+lock instead of piling up). `agent install|remove|status` manages the Claude Code hooks described
+above; `agent recall` and `agent session-start` are run by those hooks, not by hand.
 
 There are also eight dry-run previews (`scan-git`, `scan-diff`, `scan-shell`, `scan-docs`,
 `scan-conversation`, `scan-session`, `scan-github`, `scan-structure`) that write nothing and print
