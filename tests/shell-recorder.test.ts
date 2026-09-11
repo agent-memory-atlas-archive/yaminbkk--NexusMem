@@ -103,6 +103,8 @@ describe('toHookLogLine / recordShellEvent', () => {
 describe('recorder process: success, failure and crash boundaries', () => {
   function run(input: string, args: string[], opts: { killAfterMs?: number } = {}) {
     const child = spawn(process.execPath, [RECORDER, ...args], { env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+    // The recorder exits early on an oversized event, so writing the rest can EPIPE; that is the expected drop.
+    child.stdin.on('error', () => {});
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (c) => (stdout += c));
