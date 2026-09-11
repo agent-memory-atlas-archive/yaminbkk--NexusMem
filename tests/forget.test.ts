@@ -242,13 +242,15 @@ describe('nexusmem forget', () => {
       // resolves the long form, so the two are different strings and only
       // the resolved root actually scopes into this repo.
       const repo = await readRepoInfo(dir);
-      const secret = 'sk-secret-resurrection-test';
+      // Deliberately not credential-shaped: redaction already hides a real bearer token at ingest,
+      // and this test is about the deny-list surviving --rebuild, not about redaction.
+      const secret = 'acme-private-note-resurrection-test';
       await appendHookLogEntry(hookLogPath(), {
         ts: '2026-01-01T00:00:00.000Z',
         cwd: repo.root,
         exitCode: 0,
         durationMs: 12,
-        command: `curl -H "Authorization: Bearer ${secret}"`,
+        command: `echo ${secret} >> notes.txt`,
       });
       await appendHookLogEntry(hookLogPath(), {
         ts: '2026-01-01T00:00:01.000Z',

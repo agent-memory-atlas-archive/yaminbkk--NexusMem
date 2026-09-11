@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import pc from 'picocolors';
 import { correlateFailures } from '../../correlate/failure-fix.js';
 import { collectConversationTurns } from '../../collectors/conversation.js';
@@ -18,6 +19,8 @@ import { isAncestor } from '../../git/repo.js';
 import { GhCliProvider, GithubUnavailableError, parseGithubSlug, type GithubProvider } from '../../github/read.js';
 import { checkContradictions } from '../../retrieval/contradiction.js';
 import { collectAvailableShellHistory } from '../../shell/detect.js';
+import { sanitizeHookLog } from '../../shell/hook-log.js';
+import { hookLogPath } from '../../shell/paths.js';
 import { OllamaChatProvider, type SummarizationProvider } from '../../slm/provider.js';
 import { reconcileProjectId } from '../../store/reconcile.js';
 import { MemoryStore, type IngestStats } from '../../store/store.js';
@@ -255,6 +258,22 @@ async function syncShell(
     repoRoot,
     hookCursor: store.getSyncCursor(projectId, 'shell:pwsh-hook'),
   });
+
+  // Hooks installed before 0.10.5 still log commands raw; redact the shared log now that it has been read.
+  if (existsSync(hookLogPath())) {
+    try {
+      const { linesChanged, legacyLines } = await sanitizeHookLog(hookLogPath());
+      if (linesChanged > 0) log(`  ${pc.dim(`shell hook log: redacted ${linesChanged} line(s)`)}`);
+      if (legacyLines > 0) {
+        log(
+          `${pc.yellow('shell')} ${legacyLines} hook-log line(s) were written by an outdated NexusMem shell hook that stores commands ` +
+            'unredacted until a sync -- run `nexusmem hook install` again in each shell',
+        );
+      }
+    } catch (err) {
+      log(`${pc.yellow('shell')} could not redact the hook log (${(err as Error).message}) -- run \`nexusmem scrub-secrets --yes\``);
+    }
+  }
 
   if (results.length === 0) {
     log(`${pc.dim('shell')} no history source found on this machine`);

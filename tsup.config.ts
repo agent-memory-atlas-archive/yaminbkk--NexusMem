@@ -1,7 +1,9 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: { 'cli/index': 'src/cli/index.ts' },
+  // The recorder runs once per shell command, so it is its own small bundle with no native deps.
+  entry: { 'cli/index': 'src/cli/index.ts', 'cli/recorder': 'src/cli/recorder.ts' },
+  splitting: false,
   format: ['esm'],
   platform: 'node',
   target: 'node22',

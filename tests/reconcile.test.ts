@@ -100,6 +100,29 @@ describe('reconcileProjectId', () => {
     expect(row.id).toBe(expectedNewId);
   });
 
+  it('migrates a redacted hook shell_command via meta.commandHash -- the raw command is no longer stored', () => {
+    const ts = '2026-08-14T10:00:00.000Z';
+    const hash = sha256Hex('export DB_PASSWORD=my-secret').slice(0, 12);
+    const naturalKey = `pwsh-hook:${ts}:${hash}`;
+
+    store.upsertNodes([
+      node({
+        id: makeNodeId(OLD, 'shell_command', naturalKey),
+        kind: 'shell_command',
+        projectId: OLD,
+        ts,
+        source: 'shell:pwsh-hook',
+        meta: { command: 'export DB_PASSWORD: [redacted]', commandHash: hash },
+      }),
+    ]);
+
+    const result = reconcileProjectId(store.raw, OLD, NEW);
+
+    expect(result.migrated).toBe(1);
+    const row = store.raw.prepare('SELECT id FROM nodes WHERE project_id = ?').get(NEW) as { id: string };
+    expect(row.id).toBe(makeNodeId(NEW, 'shell_command', naturalKey));
+  });
+
   it.each([
     ['bash-hook', 'shell:bash-hook'],
     ['zsh-hook', 'shell:zsh-hook'],

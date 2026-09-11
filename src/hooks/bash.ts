@@ -16,6 +16,8 @@
  * can't.
  */
 
+import { defaultRecorderCommand, forPosixShell, type RecorderCommand } from './recorder-command.js';
+
 const MARK_START = '# >>> nexusmem shell hook >>>';
 const MARK_END = '# <<< nexusmem shell hook <<<';
 
@@ -24,10 +26,12 @@ function toBashLiteral(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-export function renderHookSnippet(logPath: string): string {
+export function renderHookSnippet(logPath: string, recorder: RecorderCommand = defaultRecorderCommand()): string {
   return [
     MARK_START,
     `__nxm_log_path=${toBashLiteral(logPath)}`,
+    `__nxm_node=${toBashLiteral(forPosixShell(recorder.node))}`,
+    `__nxm_recorder=${toBashLiteral(forPosixShell(recorder.script))}`,
     '__nxm_cmd_start=""',
     '__nxm_last_cmd=""',
     '__nxm_debug_trap_owned=""',
@@ -38,6 +42,7 @@ export function renderHookSnippet(logPath: string): string {
     '  s=${s//\\"/\\\\\\"}',
     "  s=${s//$'\\n'/\\\\n}",
     "  s=${s//$'\\t'/\\\\t}",
+    "  s=${s//$'\\r'/\\\\r}",
     '  printf \'%s\' "$s"',
     '}',
     '',
@@ -73,12 +78,12 @@ export function renderHookSnippet(logPath: string): string {
     '    __nxm_dur=$(( __nxm_ms - __nxm_cmd_start ))',
     '  fi',
     '',
-    '  local __nxm_dir',
-    '  __nxm_dir=$(dirname -- "$__nxm_log_path" 2>/dev/null)',
-    '  [ -d "$__nxm_dir" ] || mkdir -p "$__nxm_dir" 2>/dev/null',
-    '  printf \'{"ts":"%s","cwd":"%s","exitCode":%s,"durationMs":%s,"command":"%s","shell":"bash-hook"}\\n\' \\',
+    '  local __nxm_event',
+    '  __nxm_event=$(printf \'{"ts":"%s","cwd":"%s","exitCode":%s,"durationMs":%s,"command":"%s"}\' \\',
     '    "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$(__nxm_json_escape "$PWD")" "$__nxm_exit" "$__nxm_dur" \\',
-    '    "$(__nxm_json_escape "$__nxm_last_cmd")" >> "$__nxm_log_path" 2>/dev/null',
+    '    "$(__nxm_json_escape "$__nxm_last_cmd")")',
+    // Only the recorder's stdin (a pipe, never a file) sees the raw command; it hashes, redacts, then appends.
+    '  ( printf \'%s\' "$__nxm_event" | "$__nxm_node" "$__nxm_recorder" --log "$__nxm_log_path" --shell bash-hook >/dev/null 2>&1 & )',
     '',
     '  __nxm_cmd_start=""',
     '  __nxm_last_cmd=""',
@@ -121,8 +126,8 @@ export function stripHookSnippet(profileContent: string): string {
 }
 
 /** Idempotent: strips any existing block first, so re-running with a new log path updates cleanly. */
-export function upsertHookSnippet(profileContent: string, logPath: string): string {
+export function upsertHookSnippet(profileContent: string, logPath: string, recorder?: RecorderCommand): string {
   const stripped = stripHookSnippet(profileContent).replace(/\s+$/, '');
   const prefix = stripped.length > 0 ? `${stripped}\n\n` : '';
-  return `${prefix}${renderHookSnippet(logPath)}`;
+  return `${prefix}${renderHookSnippet(logPath, recorder)}`;
 }

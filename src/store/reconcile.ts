@@ -151,7 +151,8 @@ function recomputeByNaturalKey(
  *
  * Only kinds whose original natural key survives in what's already stored
  * are recomputed and re-inserted (`session_summary` via `meta.sessionKey`;
- * hook-sourced `shell_command` via `ts` + `meta.command`, matching
+ * hook-sourced `shell_command` via `ts` + `meta.commandHash` (or, on rows
+ * written before shell meta was redacted, a hash of the raw `meta.command`), matching
  * `shell/detect.ts`'s `<shell>-hook:${ts}:${sha256(command)}` scheme -- one
  * recompute pass per live hook source, since pwsh/bash/zsh each write their
  * own `shell:<kind>-hook` source string).
@@ -210,7 +211,16 @@ export function reconcileProjectId(db: DB, oldProjectId: string, newProjectId: s
         newProjectId,
         'shell_command',
         source,
-        (row, meta) => (typeof meta.command === 'string' ? `${prefix}:${row.ts}:${sha256Hex(meta.command).slice(0, 12)}` : null),
+        (row, meta) => {
+          // Rows written before meta.command was redacted have no commandHash but still hold the raw command.
+          const hash =
+            typeof meta.commandHash === 'string'
+              ? meta.commandHash
+              : typeof meta.command === 'string'
+                ? sha256Hex(meta.command).slice(0, 12)
+                : null;
+          return hash ? `${prefix}:${row.ts}:${hash}` : null;
+        },
         denyEntries,
       );
       hookShell.migrated += r.migrated;
