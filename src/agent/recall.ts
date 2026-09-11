@@ -41,6 +41,18 @@ const SELECT_BY_HASH = `
   ORDER BY n.ts DESC
   LIMIT ?`;
 
+/** Recent failures, newest first; the caller drops the ones something already resolved. */
+const SELECT_RECENT_FAILURES = `
+  SELECT n.id, n.ts, n.meta, NULL AS paths
+  FROM nodes n
+  WHERE n.project_id = ?
+    AND n.kind = 'shell_command'
+    AND json_extract(n.meta, '$.exitCode') IS NOT NULL
+    AND json_extract(n.meta, '$.exitCode') != 0
+    AND n.ts >= ?
+  ORDER BY n.ts DESC
+  LIMIT 40`;
+
 const SELECT_BY_ID = `
   SELECT n.id, n.ts, n.meta,
          (SELECT group_concat(f.path) FROM node_files f WHERE f.node_id = n.id) AS paths
@@ -91,4 +103,51 @@ export function recallFailure(store: MemoryStore, projectId: string, commandHash
     : 'Previous attempts did not resolve it, so a different approach is likely needed.';
 
   return { text: [header, ...lines, footer].join('\n').slice(0, MAX_RECALL_CHARS), matched: past.length, resolved };
+}
+
+/** ~150 tokens. A session opener has to be cheap enough that nobody would turn it off. */
+export const MAX_DIGEST_CHARS = 600;
+const DIGEST_WINDOW_DAYS = 14;
+const MAX_DIGEST_COMMANDS = 3;
+
+export interface SessionDigest {
+  text: string;
+  unresolved: number;
+}
+
+/**
+ * What is worth knowing when a session opens: commands that failed here
+ * recently and that nothing has been recorded as fixing.
+ *
+ * Returns null far more often than not, which is the point -- a repository
+ * with no unresolved failures gets no session opener at all.
+ */
+export function recallSessionStart(store: MemoryStore, projectId: string, now = new Date()): SessionDigest | null {
+  const since = new Date(now.getTime() - DIGEST_WINDOW_DAYS * 86_400_000).toISOString();
+  const rows = store.raw.prepare(SELECT_RECENT_FAILURES).all(projectId, since) as NodeRow[];
+
+  // One entry per command: ten failures of one command is one problem, not ten.
+  const byCommand = new Map<string, string>();
+  for (const row of rows) {
+    if (store.getLinkedNodeIds(row.id, RESOLVED_BY_RETRY).length > 0) continue;
+    const command = (JSON.parse(row.meta) as { command?: string }).command?.split(/\r?\n/)[0]?.trim();
+    if (!command || byCommand.has(command)) continue;
+    byCommand.set(command, row.ts);
+  }
+  if (byCommand.size === 0) return null;
+
+  const listed = [...byCommand].slice(0, MAX_DIGEST_COMMANDS);
+  const lines = listed.map(([command, ts]) => `- ${command} (last failed ${day(ts)})`);
+  const more = byCommand.size > listed.length ? ` and ${byCommand.size - listed.length} other(s)` : '';
+
+  return {
+    text: [
+      `NexusMem: ${byCommand.size} command(s) failed in this repository in the last ${DIGEST_WINDOW_DAYS} days with no recorded fix${more}:`,
+      ...lines,
+      'This history is searchable with the nexusmem MCP tools if one of them comes up.',
+    ]
+      .join('\n')
+      .slice(0, MAX_DIGEST_CHARS),
+    unresolved: byCommand.size,
+  };
 }

@@ -13,6 +13,8 @@ export interface AgentHookCommands {
   capture: string;
   /** Full CLI: recall has to read the database, which the capture bundle cannot. */
   recall: string;
+  /** Starts a background sync and opens the session with a digest, when there is one. */
+  sessionStart: string;
 }
 
 /**
@@ -32,5 +34,6 @@ export function agentHookCommands(
   return {
     capture: `${quote(node)} ${quote(captureScript)}`,
     recall: `${quote(node)} ${quote(cliScript)} agent recall --trigger failure`,
+    sessionStart: `${quote(node)} ${quote(cliScript)} agent session-start`,
   };
 }

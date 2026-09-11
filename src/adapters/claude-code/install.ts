@@ -41,10 +41,17 @@ export interface ClaudeSettings {
 
 export function isNexusMemHook(command: string): boolean {
   const c = command.toLowerCase();
-  return c.includes('agent-hook.js') || /agent\s+recall/.test(c);
+  return c.includes('agent-hook.js') || /agent\s+(recall|session-start)/.test(c);
 }
 
+const HOOK_EVENTS = ['SessionStart', 'PostToolUse', 'PostToolUseFailure'] as const;
+
 function matcherFor(commands: AgentHookCommands, event: string): HookMatcher[] {
+  // No matcher: every way a session opens (startup, resume, clear, compact) wants the same treatment.
+  if (event === 'SessionStart') {
+    return [{ hooks: [{ type: 'command', command: commands.sessionStart, timeout: RECALL_TIMEOUT_SECONDS }] }];
+  }
+
   const capture: HookMatcher = {
     matcher: CAPTURE_MATCHER,
     hooks: [{ type: 'command', command: commands.capture }],
@@ -65,7 +72,7 @@ function withoutOurs(entries: readonly HookMatcher[]): HookMatcher[] {
 
 export function upsertAgentHooks(settings: ClaudeSettings, commands: AgentHookCommands): ClaudeSettings {
   const hooks = { ...(settings.hooks ?? {}) };
-  for (const event of ['PostToolUse', 'PostToolUseFailure']) {
+  for (const event of HOOK_EVENTS) {
     hooks[event] = [...withoutOurs(hooks[event] ?? []), ...matcherFor(commands, event)];
   }
   return { ...settings, hooks };
@@ -102,6 +109,6 @@ export function agentHookStatus(settings: ClaudeSettings, commands: AgentHookCom
     .filter(isNexusMemHook);
 
   if (present.length === 0) return { installed: false, upToDate: false };
-  const expected = [commands.capture, commands.recall];
+  const expected = [commands.capture, commands.recall, commands.sessionStart];
   return { installed: true, upToDate: expected.every((cmd) => present.includes(cmd)) };
 }

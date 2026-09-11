@@ -33,7 +33,7 @@ import { runScanGithub } from './commands/scan-github.js';
 import { runScanSession, SCAN_SESSION_DEFAULT_MODEL } from './commands/scan-session.js';
 import { runScanShell } from './commands/scan-shell.js';
 import { runScanStructure } from './commands/scan-structure.js';
-import { runAgentInstall, runAgentRecall, runAgentRemove, runAgentStatus } from './commands/agent.js';
+import { runAgentInstall, runAgentRecall, runAgentRemove, runAgentSessionStart, runAgentStatus } from './commands/agent.js';
 import { runScrubSecrets } from './commands/scrub-secrets.js';
 import { runStale, STALE_DEFAULT_MODEL } from './commands/stale.js';
 import { runStatus } from './commands/status.js';
@@ -326,6 +326,11 @@ program
       .description('Read a hook payload on stdin and print matching failure history -- run by the hook, not by hand')
       .option('--trigger <kind>', 'which hook fired', 'failure')
       .action(() => guard(() => runAgentRecall())()),
+  )
+  .addCommand(
+    new Command('session-start')
+      .description('Start a background sync and print any unresolved-failure digest -- run by the hook, not by hand')
+      .action(() => guard(() => runAgentSessionStart())()),
   );
 
 program

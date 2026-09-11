@@ -1,10 +1,11 @@
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import pc from 'picocolors';
 import { agentHookCommands } from '../../agent/hook-command.js';
-import { recallFailure } from '../../agent/recall.js';
+import { recallFailure, recallSessionStart } from '../../agent/recall.js';
 import { markInjected, shouldInject } from '../../agent/recall-state.js';
 import {
   agentHookStatus,
@@ -12,7 +13,7 @@ import {
   removeAgentHooks,
   upsertAgentHooks,
 } from '../../adapters/claude-code/install.js';
-import { parseHookPayload } from '../../adapters/claude-code/payload.js';
+import { parseHookPayload, parseSessionStart } from '../../adapters/claude-code/payload.js';
 import { readConfig, resolveWorkspace } from '../../config/workspace.js';
 import { readRepoInfo } from '../../git/repo.js';
 import { MemoryStore } from '../../store/store.js';
@@ -113,6 +114,61 @@ export async function runAgentStatus(opts: AgentCommandOptions): Promise<number>
     ].join('\n'),
   );
   return 0;
+}
+
+export interface AgentSessionStartOptions {
+  input?: string;
+  out?: (chunk: string) => void;
+  /** Overridable so a test never spawns a real background sync. */
+  startSync?: (repoRoot: string) => void;
+}
+
+/**
+ * Detached and unwaited: this is the "sync at session start" step the user
+ * previously had to remember, and the session must not wait on it.
+ */
+function spawnBackgroundSync(repoRoot: string): void {
+  const cli = process.argv[1];
+  if (!cli) return;
+  spawn(process.execPath, [cli, 'sync', '--auto', '--quiet', '-C', repoRoot], {
+    detached: true,
+    stdio: 'ignore',
+  }).unref();
+}
+
+/**
+ * Opens a session: kicks off the sync, then says something only if this
+ * repository has failures nothing has fixed. Silent otherwise, and silent on
+ * every error, like recall.
+ */
+export async function runAgentSessionStart(opts: AgentSessionStartOptions = {}): Promise<number> {
+  const out = opts.out ?? ((chunk: string) => void process.stdout.write(chunk));
+  try {
+    const payload = parseSessionStart(opts.input ?? (await readStdin()));
+    if (!payload) return 0;
+
+    const repo = await readRepoInfo(payload.cwd);
+    const ws = resolveWorkspace(repo.root);
+    if (!existsSync(ws.dbPath) || !existsSync(ws.configPath)) return 0;
+
+    (opts.startSync ?? spawnBackgroundSync)(repo.root);
+
+    const { projectId } = await readConfig(ws);
+    const store = MemoryStore.open(ws.dbPath);
+    let digest: ReturnType<typeof recallSessionStart>;
+    try {
+      digest = recallSessionStart(store, projectId);
+    } finally {
+      store.close();
+    }
+    if (!digest) return 0;
+
+    // Plain stdout, not JSON: that is the injection form the live probe verified for SessionStart.
+    out(`${digest.text}\n`);
+    return 0;
+  } catch {
+    return 0;
+  }
 }
 
 export interface AgentRecallOptions {

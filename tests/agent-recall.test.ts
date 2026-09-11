@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type AgentEvent, redactAgentEvent } from '../src/agent/event.js';
-import { MAX_RECALL_CHARS, recallFailure } from '../src/agent/recall.js';
+import { MAX_DIGEST_CHARS, MAX_RECALL_CHARS, recallFailure, recallSessionStart } from '../src/agent/recall.js';
 import { markInjected, MAX_INJECTIONS_PER_SESSION, shouldInject } from '../src/agent/recall-state.js';
 import { collectAgentEvents } from '../src/collectors/agent-events.js';
 import { correlateFailures } from '../src/correlate/failure-fix.js';
@@ -121,6 +121,46 @@ describe('recallFailure', () => {
     // Both redact to identical text; only the hash keeps them apart.
     expect(recallFailure(store, PROJECT, HASH(a))).not.toBeNull();
     expect(recallFailure(store, PROJECT, HASH(b))).toBeNull();
+  });
+});
+
+describe('recallSessionStart', () => {
+  const NOW = new Date(Date.parse('2026-09-04T12:00:00.000Z'));
+
+  it('says nothing for a repository with no failures', () => {
+    store.upsertNodes(
+      collectAgentEvents([event({ command: 'npm test', outcome: 'ok', exitCode: 0 })], PROJECT, { repoRoot: ROOT }),
+    );
+    expect(recallSessionStart(store, PROJECT, NOW)).toBeNull();
+  });
+
+  it('says nothing once every failure has a recorded fix', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+    expect(recallSessionStart(store, PROJECT, NOW)).toBeNull();
+  });
+
+  it('lists commands that failed with no fix, one line each', () => {
+    store.upsertNodes(
+      collectAgentEvents(
+        [event({ command: 'npm test' }), event({ command: 'npm test' }), event({ command: 'cargo build' })],
+        PROJECT,
+        { repoRoot: ROOT },
+      ),
+    );
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.unresolved).toBe(2);
+    // Ten failures of one command are one problem, not ten.
+    expect(digest.text.match(/npm test/g)).toHaveLength(1);
+    expect(digest.text).toContain('cargo build');
+    expect(digest.text.length).toBeLessThanOrEqual(MAX_DIGEST_CHARS);
+  });
+
+  it('ignores failures older than the window', () => {
+    const old = new Date(Date.parse('2026-09-04T09:01:00.000Z') + 40 * 86_400_000);
+    store.upsertNodes(collectAgentEvents([event({ command: 'npm test' })], PROJECT, { repoRoot: ROOT }));
+    expect(recallSessionStart(store, PROJECT, old)).toBeNull();
   });
 });
 

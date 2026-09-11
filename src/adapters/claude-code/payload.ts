@@ -49,6 +49,31 @@ function parseError(error: string): { exitCode: number | null; signature: string
  * `now` is passed in because no hook payload carries a timestamp -- the event
  * is stamped when it is received, which is within milliseconds of the action.
  */
+export interface SessionStartPayload {
+  sessionId: string;
+  cwd: string;
+  /** startup | resume | clear | compact, per the live probe. */
+  source: string | null;
+}
+
+/** SessionStart carries no tool fields, so it gets its own tiny parser rather than bending the event one. */
+export function parseSessionStart(rawJson: string): SessionStartPayload | null {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(rawJson.trim());
+  } catch {
+    return null;
+  }
+  if (typeof payload !== 'object' || payload === null) return null;
+  const p = payload as HookPayload & { source?: unknown };
+  if (str(p.hook_event_name) !== 'SessionStart') return null;
+
+  const sessionId = str(p.session_id);
+  const cwd = str(p.cwd);
+  if (!sessionId || !cwd) return null;
+  return { sessionId, cwd, source: str(p.source) ?? null };
+}
+
 export function parseHookPayload(rawJson: string, now: string): AgentEvent | null {
   let payload: unknown;
   try {

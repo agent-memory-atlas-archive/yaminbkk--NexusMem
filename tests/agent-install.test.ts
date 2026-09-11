@@ -10,7 +10,14 @@ import {
   removeAgentHooks,
   upsertAgentHooks,
 } from '../src/adapters/claude-code/install.js';
-import { runAgentInstall, runAgentRecall, runAgentRemove, runAgentStatus, settingsPathFor } from '../src/cli/commands/agent.js';
+import {
+  runAgentInstall,
+  runAgentRecall,
+  runAgentRemove,
+  runAgentSessionStart,
+  runAgentStatus,
+  settingsPathFor,
+} from '../src/cli/commands/agent.js';
 import { runInit } from '../src/cli/commands/init.js';
 import { collectAgentEvents } from '../src/collectors/agent-events.js';
 import { readConfig, resolveWorkspace } from '../src/config/workspace.js';
@@ -18,14 +25,26 @@ import { sha256Hex } from '../src/core/ids.js';
 import { MemoryStore } from '../src/store/store.js';
 import { gitFixture } from './helpers.js';
 
-const COMMANDS: AgentHookCommands = { capture: 'node /nm/dist/cli/agent-hook.js', recall: 'node /nm/dist/cli/index.js agent recall --trigger failure' };
+const COMMANDS: AgentHookCommands = {
+  capture: 'node /nm/dist/cli/agent-hook.js',
+  recall: 'node /nm/dist/cli/index.js agent recall --trigger failure',
+  sessionStart: 'node /nm/dist/cli/index.js agent session-start',
+};
+const OLD_COMMANDS: AgentHookCommands = {
+  capture: 'node /old/agent-hook.js',
+  recall: 'node /old/index.js agent recall',
+  sessionStart: 'node /old/index.js agent session-start',
+};
 const FOREIGN = { matcher: 'Bash', hooks: [{ type: 'command', command: 'node /other/tool.js' }] };
 
 describe('settings upsert', () => {
   it('installs a capture hook on both events and a recall hook on failures', () => {
     const settings = upsertAgentHooks({}, COMMANDS);
 
-    expect(Object.keys(settings.hooks ?? {})).toEqual(['PostToolUse', 'PostToolUseFailure']);
+    expect(Object.keys(settings.hooks ?? {})).toEqual(['SessionStart', 'PostToolUse', 'PostToolUseFailure']);
+    expect(settings.hooks?.SessionStart?.[0]?.hooks?.[0]?.command).toBe(COMMANDS.sessionStart);
+    // No matcher on SessionStart: startup, resume, clear and compact all want the same treatment.
+    expect(settings.hooks?.SessionStart?.[0]?.matcher).toBeUndefined();
     expect(settings.hooks?.PostToolUse?.[0]?.hooks?.[0]?.command).toBe(COMMANDS.capture);
     const failure = settings.hooks?.PostToolUseFailure ?? [];
     expect(failure.flatMap((e) => e.hooks ?? []).map((h) => h.command)).toEqual([COMMANDS.capture, COMMANDS.recall]);
@@ -39,7 +58,7 @@ describe('settings upsert', () => {
   });
 
   it('updates in place when the NexusMem path changed, without stacking a second copy', () => {
-    const old = upsertAgentHooks({}, { capture: 'node /old/agent-hook.js', recall: 'node /old/index.js agent recall' });
+    const old = upsertAgentHooks({}, OLD_COMMANDS);
     const next = upsertAgentHooks(old, COMMANDS);
 
     const commands = (next.hooks?.PostToolUseFailure ?? []).flatMap((e) => e.hooks ?? []).map((h) => h.command);
@@ -54,7 +73,8 @@ describe('settings upsert', () => {
     expect(installed.theme).toBe('dark');
 
     const { settings, removed } = removeAgentHooks(installed);
-    expect(removed).toBe(3);
+    // capture on two events, plus recall, plus session-start.
+    expect(removed).toBe(4);
     expect(settings).toEqual(before);
   });
 
@@ -67,8 +87,7 @@ describe('settings upsert', () => {
     expect(agentHookStatus({}, COMMANDS)).toEqual({ installed: false, upToDate: false });
     expect(agentHookStatus(upsertAgentHooks({}, COMMANDS), COMMANDS)).toEqual({ installed: true, upToDate: true });
 
-    const stale = upsertAgentHooks({}, { capture: 'node /old/agent-hook.js', recall: 'node /old/index.js agent recall' });
-    expect(agentHookStatus(stale, COMMANDS)).toEqual({ installed: true, upToDate: false });
+    expect(agentHookStatus(upsertAgentHooks({}, OLD_COMMANDS), COMMANDS)).toEqual({ installed: true, upToDate: false });
   });
 });
 
@@ -128,8 +147,7 @@ describe('nexusmem agent (CLI)', () => {
 
     const removed: string[] = [];
     await runAgentRemove({ cwd: dir, scope: 'project', out: (c) => removed.push(c) });
-    // Three commands: capture on PostToolUse, capture and recall on PostToolUseFailure.
-    expect(removed.join('')).toContain('removed 3');
+    expect(removed.join('')).toContain('removed 4');
 
     const after: string[] = [];
     await runAgentStatus({ cwd: dir, scope: 'project', out: (c) => after.push(c) });
@@ -267,5 +285,42 @@ describe('nexusmem agent recall (CLI)', () => {
     await runAgentRecall({ input: payload('psql postgres://app:two@db/app'), out: (c) => miss.push(c) });
     expect(miss.join('')).toBe('');
     expect(sha256Hex(withSecret)).not.toBe(sha256Hex('psql postgres://app:two@db/app'));
+  });
+
+  const sessionStartPayload = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({ session_id: 'sess-start', cwd: dir, hook_event_name: 'SessionStart', source: 'startup', ...over });
+
+  it('opens a session by starting a sync and naming what is still unfixed', async () => {
+    await seedFailure('npm test');
+
+    const synced: string[] = [];
+    const out: string[] = [];
+    expect(
+      await runAgentSessionStart({ input: sessionStartPayload(), out: (c) => out.push(c), startSync: (r) => synced.push(r) }),
+    ).toBe(0);
+
+    // The sync the user previously had to remember to run.
+    expect(synced).toHaveLength(1);
+    expect(out.join('')).toContain('with no recorded fix');
+    expect(out.join('')).toContain('npm test');
+  });
+
+  it('opens silently when this repository has nothing unresolved', async () => {
+    const out: string[] = [];
+    await runAgentSessionStart({ input: sessionStartPayload(), out: (c) => out.push(c), startSync: () => {} });
+    expect(out.join('')).toBe('');
+  });
+
+  it('ignores a payload that is not a SessionStart, and never throws', async () => {
+    const out: string[] = [];
+    const synced: string[] = [];
+    await runAgentSessionStart({ input: '{ not json', out: (c) => out.push(c), startSync: (r) => synced.push(r) });
+    await runAgentSessionStart({
+      input: sessionStartPayload({ hook_event_name: 'SessionEnd' }),
+      out: (c) => out.push(c),
+      startSync: (r) => synced.push(r),
+    });
+    expect(out.join('')).toBe('');
+    expect(synced).toEqual([]);
   });
 });
