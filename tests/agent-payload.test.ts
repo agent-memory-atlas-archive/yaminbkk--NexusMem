@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { agentEventNaturalKey, MAX_ERROR_SIGNATURE_CHARS } from '../src/agent/event.js';
-import { parseHookPayload } from '../src/adapters/claude-code/payload.js';
+import { parseHookPayload, parseHookPayloadDetailed } from '../src/adapters/claude-code/payload.js';
 import { sha256Hex } from '../src/core/ids.js';
 
 /**
@@ -126,6 +126,23 @@ describe('parseHookPayload', () => {
 
   it('tags a subagent event with its agent id', () => {
     expect(parse({ ...FAILING_BASH, agent_id: 'agent-7' })).toMatchObject({ agentId: 'agent-7' });
+  });
+
+  it.each([
+    ['unparsable-json', '{"session_id":"s"'],
+    ['unparsable-json', '"just a string"'],
+    ['unsupported-event', JSON.stringify({ ...FAILING_BASH, hook_event_name: 'PreToolUse' })],
+    ['unsupported-tool', JSON.stringify({ ...FAILING_BASH, tool_name: 'WebFetch' })],
+    ['missing-fields', JSON.stringify({ ...FAILING_BASH, tool_use_id: undefined })],
+    ['missing-fields', JSON.stringify({ ...FAILING_BASH, tool_input: {} })],
+    ['missing-fields', JSON.stringify({ ...EDIT, tool_input: {} })],
+  ])('reports %s so status can tell a quiet week from a broken payload shape', (reason, json) => {
+    const outcome = parseHookPayloadDetailed(json, NOW);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome).toMatchObject({ reason });
+    // The reason travels alone: no payload text rides along with it.
+    expect(JSON.stringify(outcome)).not.toContain('DB_PASSWORD');
   });
 
   it.each([

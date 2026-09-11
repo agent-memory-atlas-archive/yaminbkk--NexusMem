@@ -9,9 +9,10 @@
  * it cannot handle is dropped. It never exits 2, which is the only code that
  * would block the agent.
  */
+import { captureDropStatePath as dropStatePath, recordCaptureDrop } from '../../agent/capture-health.js';
 import { appendAgentEvent } from '../../agent/record.js';
 import { agentEventLogPath } from '../../agent/paths.js';
-import { parseHookPayload } from './payload.js';
+import { parseHookPayloadDetailed } from './payload.js';
 
 const MAX_EVENT_BYTES = 1_000_000;
 
@@ -32,10 +33,19 @@ async function main(): Promise<void> {
     if (size > MAX_EVENT_BYTES) drop();
     chunks.push(chunk as Buffer);
   }
-  // Windows PowerShell can prepend a BOM to a redirected stdin; parseHookPayload trims it.
-  const event = parseHookPayload(Buffer.concat(chunks).toString('utf8'), new Date().toISOString());
-  if (!event) return drop();
-  await appendAgentEvent(event, arg('--log') ?? agentEventLogPath());
+  // Windows PowerShell can prepend a BOM to a redirected stdin; the parser trims it.
+  const outcome = parseHookPayloadDetailed(Buffer.concat(chunks).toString('utf8'), new Date().toISOString());
+  if (!outcome.ok) {
+    // A dropped event leaves no other trace, so record why -- a code, never the payload.
+    recordCaptureDrop(outcome.reason, dropStatePath());
+    return drop();
+  }
+  try {
+    await appendAgentEvent(outcome.event, arg('--log') ?? agentEventLogPath());
+  } catch {
+    recordCaptureDrop('write-failed', dropStatePath());
+    return drop();
+  }
   process.exit(0);
 }
 

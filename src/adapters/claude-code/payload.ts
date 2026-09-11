@@ -1,3 +1,4 @@
+import type { DropReason } from '../../agent/capture-health.js';
 import { type AgentEvent, type AgentOutcome, type RawAgentEvent, redactAgentEvent } from '../../agent/event.js';
 
 /**
@@ -74,23 +75,36 @@ export function parseSessionStart(rawJson: string): SessionStartPayload | null {
   return { sessionId, cwd, source: str(p.source) ?? null };
 }
 
+/**
+ * Why an event was thrown away, so `agent status` can tell a quiet week from
+ * a payload shape this adapter no longer understands. The reason is a code
+ * from the core's closed set; no payload text ever travels with it.
+ */
+export type ParseOutcome = { ok: true; event: AgentEvent } | { ok: false; reason: DropReason };
+
+/** Thin wrapper: the common callers only care whether there is an event. */
 export function parseHookPayload(rawJson: string, now: string): AgentEvent | null {
+  const outcome = parseHookPayloadDetailed(rawJson, now);
+  return outcome.ok ? outcome.event : null;
+}
+
+export function parseHookPayloadDetailed(rawJson: string, now: string): ParseOutcome {
   let payload: unknown;
   try {
     // A JSON.parse error message quotes its input, i.e. the raw command; never let it escape.
     payload = JSON.parse(rawJson.trim());
   } catch {
-    return null;
+    return { ok: false, reason: 'unparsable-json' };
   }
-  if (typeof payload !== 'object' || payload === null) return null;
+  if (typeof payload !== 'object' || payload === null) return { ok: false, reason: 'unparsable-json' };
   const p = payload as HookPayload;
 
   const event = str(p.hook_event_name);
   const sessionId = str(p.session_id);
   const eventId = str(p.tool_use_id);
   const toolName = str(p.tool_name);
-  if (!sessionId || !eventId || !toolName) return null;
-  if (event !== 'PostToolUse' && event !== 'PostToolUseFailure') return null;
+  if (event !== 'PostToolUse' && event !== 'PostToolUseFailure') return { ok: false, reason: 'unsupported-event' };
+  if (!sessionId || !eventId || !toolName) return { ok: false, reason: 'missing-fields' };
 
   const failed = event === 'PostToolUseFailure';
   const interrupted = failed && p.is_interrupt === true;
@@ -109,7 +123,7 @@ export function parseHookPayload(rawJson: string, now: string): AgentEvent | nul
 
   if (toolName === 'Bash') {
     const command = str(p.tool_input?.command);
-    if (!command) return null;
+    if (!command) return { ok: false, reason: 'missing-fields' };
     const error = failed ? parseError(str(p.error) ?? '') : null;
     const draft: RawAgentEvent = {
       ...base,
@@ -119,15 +133,15 @@ export function parseHookPayload(rawJson: string, now: string): AgentEvent | nul
       exitCode: failed ? error?.exitCode ?? null : 0,
       ...(error?.signature ? { errorSignature: error.signature } : {}),
     };
-    return redactAgentEvent(draft);
+    return { ok: true, event: redactAgentEvent(draft) };
   }
 
   if (EDIT_TOOLS.has(toolName)) {
     // Only the path: an edit's payload also holds the file's old and new content, which is never recorded.
     const filePath = str(p.tool_input?.file_path) ?? str(p.tool_input?.notebook_path);
-    if (!filePath) return null;
-    return redactAgentEvent({ ...base, kind: 'edit', filePath, exitCode: null });
+    if (!filePath) return { ok: false, reason: 'missing-fields' };
+    return { ok: true, event: redactAgentEvent({ ...base, kind: 'edit', filePath, exitCode: null }) };
   }
 
-  return null;
+  return { ok: false, reason: 'unsupported-tool' };
 }

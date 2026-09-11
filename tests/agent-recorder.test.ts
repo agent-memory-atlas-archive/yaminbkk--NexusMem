@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { captureDropStatePath, readCaptureStatus } from '../src/agent/capture-health.js';
 import { appendAgentEvent, parseAgentEventLine, readAgentEvents } from '../src/agent/record.js';
 import { parseHookPayload } from '../src/adapters/claude-code/payload.js';
 import { sha256Hex } from '../src/core/ids.js';
@@ -129,6 +130,33 @@ describe('agent-hook process: success, failure and crash boundaries', () => {
     expect(r).toEqual({ code: 1, stdout: '', stderr: '' });
     expect(existsSync(logPath)).toBe(false);
     expect(filesContaining(home)).toEqual([]);
+  });
+
+  // The drop marker lives under this test file's isolated NEXUSMEM_HOME and is shared by
+  // every test in it, so these assert movement rather than absolute counts.
+  it('records why it dropped an event, as a code with no payload attached', async () => {
+    const before = readCaptureStatus().drops;
+    await run(`{"tool_input":{"command":"${RAW}"`);
+
+    const after = readCaptureStatus();
+    expect(after).toMatchObject({ health: 'failing', lastDropReason: 'unparsable-json' });
+    expect(after.drops).toBe(before + 1);
+    expect(readFileSync(captureDropStatePath(), 'utf8')).not.toContain(SECRET);
+  });
+
+  it('distinguishes an unsupported tool from an unreadable payload', async () => {
+    await run(payload({ tool_name: 'WebFetch' }));
+
+    expect(readCaptureStatus().lastDropReason).toBe('unsupported-tool');
+  });
+
+  it('records no new drop when capture succeeds, and reads back as healthy', async () => {
+    const before = readCaptureStatus().drops;
+    await run(payload());
+
+    const after = readCaptureStatus({ logPath });
+    expect(after.drops).toBe(before);
+    expect(after).toMatchObject({ health: 'healthy', lastEventKind: 'command', lastEventOutcome: 'fail' });
   });
 
   it('drops an event it does not handle, without writing', async () => {
