@@ -104,12 +104,14 @@ export async function runAgentStatus(opts: AgentCommandOptions): Promise<number>
   // Configuration and evidence are different questions: hooks can be installed
   // and recording nothing, which is the failure this reports.
   const capture = readCaptureStatus();
+  // Wording stays within the evidence: silence is reported as silence, not as
+  // a diagnosis, because nothing here can tell an idle week from a break.
   const CAPTURE_LABEL: Record<typeof capture.health, string> = {
-    healthy: pc.green('healthy'),
-    stale: pc.yellow('stale -- nothing captured in the last day'),
-    degraded: pc.yellow('degraded -- recent events were dropped'),
-    'never-observed': pc.yellow('never observed -- no event has ever been captured'),
-    unknown: pc.yellow('unknown -- the event log could not be read'),
+    healthy: pc.green('healthy') + pc.dim(' -- an event was captured in the last 24h'),
+    stale: pc.yellow('stale') + pc.dim(' -- nothing captured in the last 24h, which is expected if no agent ran'),
+    degraded: pc.yellow('degraded') + pc.dim(' -- recent events were dropped, so some agent activity may be missing'),
+    'never-observed': pc.yellow('never observed') + pc.dim(' -- no event has been captured yet'),
+    unknown: pc.yellow('unknown') + pc.dim(' -- the event log could not be read'),
   };
 
   out(
@@ -128,7 +130,11 @@ export async function runAgentStatus(opts: AgentCommandOptions): Promise<number>
         : []),
       // Only when it happened: a healthy install should print nothing about drops.
       ...(capture.drops > 0
-        ? [`${pc.dim('drops     ')} ${capture.drops} ${pc.dim(`(last: ${capture.lastDropReason} at ${capture.lastDropAt})`)}`]
+        ? [
+            `${pc.dim('drops     ')} ${capture.drops} ${pc.dim(
+              `(last: ${capture.lastDropReason ?? 'unrecognised'} from ${capture.lastDropFamily ?? 'unrecognised'} at ${capture.lastDropAt})`,
+            )}`,
+          ]
         : []),
       '',
     ].join('\n'),

@@ -215,12 +215,71 @@ describe('nexusmem agent (CLI)', () => {
       expect(await status()).toContain('stale');
     });
 
-    it('says degraded, and names the reason, when recent events were dropped', async () => {
-      recordCaptureDrop('unsupported-event');
+    it('says degraded, and names the reason and the hook family, when recent events were dropped', async () => {
+      recordCaptureDrop('unsupported-event', 'post-tool-use-failure');
 
       const text = await status();
       expect(text).toContain('degraded');
       expect(text).toContain('unsupported-event');
+      expect(text).toContain('post-tool-use-failure');
+    });
+
+    it('reports silence as silence, without calling capture broken', async () => {
+      writeEvent(60 * 48);
+
+      const text = await status();
+      expect(text).toContain('stale');
+      expect(text).toContain('expected if no agent ran');
+      // Nothing here can tell an idle week from a break, so it must not claim one.
+      expect(text).not.toContain('broken');
+      expect(text).not.toContain('failing');
+      expect(text).not.toContain('degraded');
+    });
+
+    it('says unknown when the event log cannot be parsed at all', async () => {
+      mkdirSync(dirname(agentEventLogPath()), { recursive: true });
+      writeFileSync(agentEventLogPath(), 'not json at all\n');
+
+      expect(await status()).toContain('unknown');
+    });
+
+    it('still reports the capture evidence after the integration is removed', async () => {
+      await runAgentInstall({ cwd: dir, scope: 'project', out: () => {} });
+      writeEvent(5);
+      await runAgentRemove({ cwd: dir, scope: 'project', out: () => {} });
+
+      const text = await status();
+      expect(text).toMatch(/installed\s+no/);
+      // The history of what was captured does not disappear with the hooks.
+      expect(text).toContain('healthy');
+    });
+
+    it('never prints a captured command, only its kind and outcome', async () => {
+      const secret = 'status-s3cret-VALUE';
+      const path = agentEventLogPath();
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(
+        path,
+        `${JSON.stringify(
+          redactAgentEvent({
+            agent: 'claude-code',
+            sessionId: 's1',
+            eventId: 'e-secret',
+            ts: new Date().toISOString(),
+            cwd: dir,
+            kind: 'command',
+            command: `psql postgres://app:${secret}@db/app`,
+            outcome: 'fail',
+            exitCode: 1,
+            durationMs: 5,
+          } as AgentEvent),
+        )}\n`,
+      );
+
+      const text = await status();
+      expect(text).toContain('(command, fail)');
+      expect(text).not.toContain(secret);
+      expect(text).not.toContain('psql');
     });
 
     it('prints nothing about drops when there have been none', async () => {
