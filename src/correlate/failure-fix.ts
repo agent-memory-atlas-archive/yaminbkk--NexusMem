@@ -16,6 +16,11 @@ import type { MemoryStore } from '../store/store.js';
  *   construction, low recall: a fix that changes the command itself (a typo
  *   correction, an added flag) is invisible to an exact-text match. Not
  *   attempted here -- fuzzy matching is a stretch goal, not this pass's job.
+ *   For agent-recorded pairs one more thing is known -- which files the agent
+ *   changed -- so an identical command that passes with nothing edited in
+ *   between is counted as unexplained rather than linked: the pass is real,
+ *   the explanation is not. Human shell history records no files, so the same
+ *   question cannot be asked of it.
  * - **Conversation bridge.** The best FTS match (AND of every significant,
  *   non-boilerplate token in the failing command) among
  *   `conversation_turn`/`session_summary` nodes in the following
@@ -66,6 +71,12 @@ export interface CorrelateStats {
   failuresExamined: number;
   linkedByRetry: number;
   linkedByDiscussion: number;
+  /**
+   * Agent-recorded runs where the same command later passed with nothing
+   * edited in between. Deliberately counted rather than linked: the pass is
+   * real, the explanation is not.
+   */
+  unexplainedRetries: number;
 }
 
 const DEFAULT_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -88,7 +99,18 @@ interface FailureRow {
   ts_epoch: number;
   command: string | null;
   cwd: string | null;
+  source: string | null;
 }
+
+interface RetryRow {
+  id: string;
+  source: string | null;
+  /** Files recorded as changed before that run; the collector attaches them to the command that follows them. */
+  file_count: number;
+}
+
+/** Agent collectors write `agent:<vendor>`; only they record which files an attempt changed. */
+const isAgentSource = (source: string | null): boolean => source?.startsWith('agent:') === true;
 
 function normalizeCommand(command: string): string {
   return command.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -172,7 +194,7 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
 
   const failures = db
     .prepare(
-      `SELECT id, ts_epoch, json_extract(meta, '$.command') AS command, json_extract(meta, '$.cwd') AS cwd
+      `SELECT id, ts_epoch, source, json_extract(meta, '$.command') AS command, json_extract(meta, '$.cwd') AS cwd
        FROM nodes
        WHERE project_id = ? AND kind = 'shell_command'
          AND source_ts IS NOT NULL
@@ -183,15 +205,17 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
     .all(projectId) as FailureRow[];
 
   const findRetry = db.prepare(
-    `SELECT id FROM nodes
-     WHERE project_id = ? AND kind = 'shell_command'
-       AND source_ts IS NOT NULL
-       AND json_extract(meta, '$.exitCode') = 0
-       AND json_extract(meta, '$.cwd') IS NOT NULL
-       AND ts_epoch > ? AND ts_epoch <= ?
-       AND lower(trim(json_extract(meta, '$.command'))) = ?
-       AND (json_extract(meta, '$.cwd') IS ? OR json_extract(meta, '$.cwd') = ?)
-     ORDER BY ts_epoch ASC LIMIT 1`,
+    `SELECT n.id, n.source,
+            (SELECT COUNT(*) FROM node_files f WHERE f.node_id = n.id) AS file_count
+     FROM nodes n
+     WHERE n.project_id = ? AND n.kind = 'shell_command'
+       AND n.source_ts IS NOT NULL
+       AND json_extract(n.meta, '$.exitCode') = 0
+       AND json_extract(n.meta, '$.cwd') IS NOT NULL
+       AND n.ts_epoch > ? AND n.ts_epoch <= ?
+       AND lower(trim(json_extract(n.meta, '$.command'))) = ?
+       AND (json_extract(n.meta, '$.cwd') IS ? OR json_extract(n.meta, '$.cwd') = ?)
+     ORDER BY n.ts_epoch ASC LIMIT 1`,
   );
 
   const findDiscussion = db.prepare(
@@ -205,6 +229,7 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
 
   let linkedByRetry = 0;
   let linkedByDiscussion = 0;
+  let unexplainedRetries = 0;
 
   for (const failure of failures) {
     if (!failure.command) continue;
@@ -216,10 +241,21 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
       normalizeCommand(failure.command),
       failure.cwd,
       failure.cwd,
-    ) as { id: string } | undefined;
+    ) as RetryRow | undefined;
     if (retry) {
-      store.linkNodes(failure.id, retry.id, RESOLVED_BY_RETRY);
-      linkedByRetry += 1;
+      // An attempt is files changed + execution + result. For agent-recorded
+      // runs all three are known, so an identical command that suddenly passes
+      // with nothing edited in between is not evidence of a fix -- it is a
+      // flake or a change of environment. Ambiguous beats a confident false
+      // link. Human shell history records no files at all, so this can only be
+      // asked of agent-recorded pairs.
+      const bothAgentRecorded = isAgentSource(failure.source) && isAgentSource(retry.source);
+      if (bothAgentRecorded && retry.file_count === 0) {
+        unexplainedRetries += 1;
+      } else {
+        store.linkNodes(failure.id, retry.id, RESOLVED_BY_RETRY);
+        linkedByRetry += 1;
+      }
     }
 
     const tokens = filterBoilerplateTokens(db, projectId, significantTokens(failure.command));
@@ -235,7 +271,7 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
     }
   }
 
-  return { failuresExamined: failures.length, linkedByRetry, linkedByDiscussion };
+  return { failuresExamined: failures.length, linkedByRetry, linkedByDiscussion, unexplainedRetries };
 }
 
 export interface ChainStats {

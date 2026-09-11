@@ -70,7 +70,7 @@ describe('correlateFailures', () => {
 
     const stats = correlateFailures(store, PROJECT);
 
-    expect(stats).toEqual({ failuresExamined: 1, linkedByRetry: 1, linkedByDiscussion: 0 });
+    expect(stats).toEqual({ failuresExamined: 1, linkedByRetry: 1, linkedByDiscussion: 0, unexplainedRetries: 0 });
     expect(store.getLinkedNodeIds('fail', RESOLVED_BY_RETRY)).toEqual(['retry']);
   });
 
