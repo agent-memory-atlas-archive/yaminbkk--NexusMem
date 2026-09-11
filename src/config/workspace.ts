@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { stripBom } from '../core/text.js';
 import { DEFAULT_SLM_MODEL } from '../slm/provider.js';
 
 /** Everything NexusMem stores lives under this directory in the repo root. */
@@ -222,7 +223,7 @@ export async function readConfig(ws: Workspace): Promise<NexusConfig> {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(stripBom(raw));
   } catch (err) {
     throw new ConfigError(`${ws.configPath} is not valid JSON: ${(err as Error).message}`);
   }

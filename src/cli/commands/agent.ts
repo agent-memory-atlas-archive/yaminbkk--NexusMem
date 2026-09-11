@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import pc from 'picocolors';
 import { readCaptureStatus } from '../../agent/capture-health.js';
+import { stripBom } from '../../core/text.js';
 import { agentHookCommands } from '../../agent/hook-command.js';
 import { recallFailure, recallSessionStart } from '../../agent/recall.js';
 import { markInjected, shouldInject } from '../../agent/recall-state.js';
@@ -44,7 +45,9 @@ export function settingsPathFor(scope: AgentSettingsScope, cwd: string): string 
 
 async function readSettings(path: string): Promise<ClaudeSettings> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
+    // A settings file a Windows editor saved carries a BOM; refusing to touch
+    // it would strand the user with an install that cannot proceed.
+    const parsed: unknown = JSON.parse(stripBom(await readFile(path, 'utf8')));
     return typeof parsed === 'object' && parsed !== null ? (parsed as ClaudeSettings) : {};
   } catch {
     return {};
