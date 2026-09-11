@@ -9,7 +9,61 @@ built from, matched by publish timestamp: `v0.1.0` → `67a4776`, `v0.1.1` → `
 
 ## [Unreleased]
 
-No unreleased changes yet.
+Planned as the 0.10.5 security release. Existing installs need action after upgrading — see
+"Action required" below.
+
+### Security
+
+- Secret redaction missed keys whose secret word is part of a longer identifier: `DB_PASSWORD=x`,
+  `OPENAI_API_KEY=x`, `AUTH_TOKEN=x`, `CLIENT_SECRET=x` were kept verbatim (the rule's leading `\b`
+  never matches after `_`), as were values shorter than 8 characters or containing characters such
+  as `@ ! # $`. This affected `scan-shell` output, stored shell and conversation nodes, session
+  summaries, the FTS index, embeddings, and `search_memory` / `query` results.
+- `shell_command` nodes stored the raw command in `meta.command`, so a typed secret was written to
+  `memory.db` even when the title showed it redacted, and was printed by `scan-shell --json` and
+  `precheck`. `meta.command` is now redacted; `meta.commandHash` keeps the raw command's hash so node
+  ids and project-id reconciliation are unchanged.
+- The installed shell hooks appended every command raw to `~/.nexusmem/shell-history.jsonl`. Hooks now
+  pass each command to a NexusMem recorder over stdin; the recorder hashes and redacts it in memory
+  and writes only the redacted command. It writes no temp files and prints nothing, and it drops any
+  event it cannot process instead of writing it raw. Hooks installed by earlier versions keep writing
+  raw commands until reinstalled: `hook status` reports them as outdated, and `sync` redacts what they
+  write and warns.
+- Redaction now also covers credentials in connection URIs (`postgres://user:pass@host`),
+  `Authorization:` headers and bearer tokens, secret-named options whose value is the next argument
+  (`--password x`), and `mysql -pX`, `sshpass -p`, `mongosh -p`, `redis-cli -a`, `curl -u user:pass`.
+
+### Added
+
+- `nexusmem scrub-secrets [--all-projects] [--yes] [--no-embed]` removes secrets that earlier versions
+  already stored: shell, conversation, session-summary and code-diff rows, contradiction reasons, the
+  FTS index, embeddings, and the shell hook log. Dry run by default. `--yes` takes a backup of each
+  database first and prints its path, redacts rows in place (ids unchanged), drops and re-embeds
+  affected vectors, rebuilds the FTS index, runs `VACUUM`, and truncates the WAL. Safe to run
+  repeatedly. Existing `memory.db.backup-*` files are listed, never modified or deleted.
+
+### Action required
+
+1. Upgrade every NexusMem install (global CLI, MCP server configs, the post-commit hook's `nexusmem`),
+   then restart MCP clients and editors so no older version keeps writing.
+2. Run `nexusmem hook install` again in each shell you installed the hook for; `nexusmem hook status`
+   should say `installed`, not `OUTDATED`.
+3. Rotate any credential typed at a shell prompt or pasted into a captured conversation in the
+   affected forms. Scrubbing cannot recall copies already returned to an LLM, backed up, or synced.
+4. Run `nexusmem scrub-secrets --all-projects`, review, then re-run with `--yes`.
+5. Delete the `memory.db.backup-*` files NexusMem lists (they predate redaction) once you have
+   verified the scrubbed database.
+6. Do not use `nexusmem forget <secret>` for this: it stores the value itself in the database's
+   deny-list, and the shell hook captures a bare argument unredacted.
+
+### Known limitations
+
+- NexusMem cannot change your shell's own history files (PSReadLine `ConsoleHost_history.txt`,
+  `~/.bash_history`, `~/.zsh_history`); they still contain whatever you typed.
+- Not yet redacted: a token used as a URL username (`https://TOKEN@host`), `openssl -passin`,
+  `keytool -storepass`, `ssh-keygen -N`, secret-bearing keys without a secret word (`STRIPE_KEY`,
+  `DB_PW`), secrets passed as plain positional arguments, and commit messages, docs and GitHub
+  threads (never redacted).
 
 ## [0.10.4] — 2026-09-07
 
