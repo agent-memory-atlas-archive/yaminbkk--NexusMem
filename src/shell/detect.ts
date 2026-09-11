@@ -32,7 +32,8 @@ export interface CollectShellHistoryOptions {
   preferHook?: boolean;
 }
 
-function isUnderRoot(cwd: string, root: string): boolean {
+/** Also used by the agent-event collector, which scopes by cwd the same way. */
+export function isUnderRoot(cwd: string, root: string): boolean {
   const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   const c = norm(cwd);
   const r = norm(root);
