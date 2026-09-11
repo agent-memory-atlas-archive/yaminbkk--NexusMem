@@ -15,7 +15,14 @@ export interface AgentHookCommands {
   recall: string;
 }
 
-const quote = (path: string): string => (path.includes(' ') ? `"${path}"` : path);
+/**
+ * Claude Code runs a hook command through a shell, which on Windows is bash:
+ * a backslash path dies there with "unexpected EOF" and the hook silently
+ * never runs. Found live -- the first end-to-end run captured nothing at all.
+ * Forward slashes work in bash and in Windows APIs alike; the quotes cover
+ * paths such as C:/Program Files/nodejs/node.exe.
+ */
+const quote = (path: string): string => `"${path.replace(/\\/g, '/')}"`;
 
 export function agentHookCommands(
   node = process.execPath,

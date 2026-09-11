@@ -3,7 +3,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type AgentEvent, redactAgentEvent } from '../src/agent/event.js';
-import type { AgentHookCommands } from '../src/agent/hook-command.js';
+import { type AgentHookCommands, agentHookCommands } from '../src/agent/hook-command.js';
 import {
   agentHookStatus,
   type ClaudeSettings,
@@ -69,6 +69,16 @@ describe('settings upsert', () => {
 
     const stale = upsertAgentHooks({}, { capture: 'node /old/agent-hook.js', recall: 'node /old/index.js agent recall' });
     expect(agentHookStatus(stale, COMMANDS)).toEqual({ installed: true, upToDate: false });
+  });
+});
+
+describe('hook command', () => {
+  it('always uses quoted forward-slash paths: a backslash path dies in the shell that runs hooks', () => {
+    const commands = agentHookCommands('C:\\Program Files\\nodejs\\node.exe', 'D:\\nm\\dist\\cli\\agent-hook.js', 'D:\\nm\\dist\\cli\\index.js');
+
+    expect(commands.capture).toBe('"C:/Program Files/nodejs/node.exe" "D:/nm/dist/cli/agent-hook.js"');
+    expect(commands.recall).toBe('"C:/Program Files/nodejs/node.exe" "D:/nm/dist/cli/index.js" agent recall --trigger failure');
+    expect(commands.capture + commands.recall).not.toContain('\\');
   });
 });
 
