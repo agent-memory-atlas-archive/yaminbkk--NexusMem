@@ -151,7 +151,7 @@ function preflightAmbient(scenario: Scenario, repoDir: string, nmHome: string): 
   // Both abandoned attempts and whatever day 1 ended green on have to be
   // reachable, or the arm is credited with information it never had. Note that
   // is day 1's answer, which in two scenarios is no longer today's.
-  for (const file of [scenario.deadEndA, scenario.deadEndB, scenario.day1FixFile]) {
+  for (const file of [scenario.attemptA.file, scenario.attemptB.file, scenario.attemptC.file]) {
     const leaf = file.split('/').pop()!;
     if (!text.includes(leaf) && !text.includes(file)) return `recall: ${file} is missing from the recalled history`;
   }
@@ -391,15 +391,15 @@ async function runOnce(scenario: Scenario, arm: Arm, repeat: number): Promise<Ru
   return {
     ...empty,
     ok: parsed?.is_error !== true,
-    repeatedDeadEndA: t.editIndex.has(scenario.deadEndA),
-    repeatedDeadEndB: t.editIndex.has(scenario.deadEndB),
-    editedStaleFile: scenario.staleFile ? t.editIndex.has(scenario.staleFile) : false,
-    editedFixFile: t.editIndex.has(scenario.fixFile),
+    repeatedDeadEndA: t.editIndex.has(scenario.attemptA.file),
+    repeatedDeadEndB: t.editIndex.has(scenario.attemptB.file),
+    editedStaleFile: scenario.staleAttempt?.file ? t.editIndex.has(scenario.staleAttempt?.file) : false,
+    editedFixFile: t.editIndex.has(scenario.fix.file),
     commandPassesAfter: commandPasses,
     firstEditedFile: t.editedFiles[0] ?? null,
-    firstEditWasDeadEnd: t.editedFiles[0] === scenario.deadEndA || t.editedFiles[0] === scenario.deadEndB,
-    toolCallsBeforeFix: t.editIndex.get(scenario.fixFile) ?? null,
-    msToFix: t.editMs.get(scenario.fixFile) ?? null,
+    firstEditWasDeadEnd: t.editedFiles[0] === scenario.attemptA.file || t.editedFiles[0] === scenario.attemptB.file,
+    toolCallsBeforeFix: t.editIndex.get(scenario.fix.file) ?? null,
+    msToFix: t.editMs.get(scenario.fix.file) ?? null,
     toolCalls: t.toolCalls,
     failedToolCalls: t.failedToolCalls,
     turns: parsed?.num_turns ?? 0,

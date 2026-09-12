@@ -21,32 +21,80 @@ import type { RawAgentEvent } from '../../src/agent/event.js';
  * a commit message.
  */
 
+/**
+ * A concrete change, as an anchored substitution, so the eval can apply an
+ * approach and re-run the check rather than asserting that it would have
+ * worked. Every approach a scenario claims was tried is one of these.
+ */
+export interface Edit {
+  file: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * The four terms the eval scores against, fixed here rather than decided once
+ * results are in:
+ *
+ * - repeated dead end: the run edited `attemptA.file` or `attemptB.file`,
+ *   whether or not the edit survived to the final diff. Both are proven to
+ *   leave the check failing, at the day-1 state and again today.
+ * - useful recovery: the run edited `fix.file`. `toolCallsBeforeFix` and
+ *   `msToFix` are measured to that first edit; the tail after it is cleanup.
+ * - discovery of C, used correctly: `fix.file` was edited AND the command
+ *   exits 0 afterwards. Editing it and still leaving the check red is
+ *   discovery without correct use, and is scored as such.
+ * - irrelevant memory: an injected note naming a command in
+ *   `UNRELATED_COMMANDS` and not the scenario's own command.
+ */
 export interface Scenario {
   name: string;
   /** The command the agent is asked to fix, and which scoring re-runs. */
   command: string;
-  /** The two files past attempts already proved do not fix this. Editing one is a repeated dead end. */
-  deadEndA: string;
-  deadEndB: string;
-  /** The file that actually fixes it today. */
-  fixFile: string;
-  /** The file the day-1 session was green after editing. What memory can legitimately name. */
-  day1FixFile: string;
+  /** The first abandoned approach. Proven not to fix the check. */
+  attemptA: Edit;
+  /** The second abandoned approach. Proven not to fix the check. */
+  attemptB: Edit;
+  /** What day 1 ended green on. In two scenarios this is no longer today's answer. */
+  attemptC: Edit;
+  /** What fixes the state the agent is handed. */
+  fix: Edit;
   /**
-   * A file the history points at that is the wrong answer now: an approach
-   * that was later reverted, or a sibling that was fixed on the earlier day
-   * and is already correct. Editing it is a memory-attributable detour.
+   * Applying day 1's answer today, where the scenario has that trap: an
+   * approach that was later reverted, or a sibling already fixed. Proven not
+   * to fix the check. Editing that file is a memory-attributable detour.
    */
-  staleFile?: string;
+  staleAttempt?: Edit;
   task: string;
+  /** Exposed so the verifier can re-run every commit against its own expectation. */
+  history: readonly Commit[];
   build(dir: string): void;
   /** Day-1 agent attempts, before redaction, as the adapter would hand them over. */
   events(repoDir: string): RawAgentEvent[];
 }
 
-interface Commit {
+export const deadEndFiles = (s: Scenario): string[] => [s.attemptA.file, s.attemptB.file];
+
+/** One string for every scenario and every arm. It names no file and no approach. */
+const TASK =
+  '`node check.js` is failing in this repository. Find out why and fix it so the command exits 0. Do not change check.js itself.';
+
+/** Throws rather than silently producing a fixture that does not contain the change it claims. */
+export function applyEdit(source: string, edit: Edit): string {
+  if (!source.includes(edit.from)) throw new Error(`${edit.file}: anchor not present`);
+  return source.replace(edit.from, edit.to);
+}
+
+export interface Commit {
   message: string;
   files?: Record<string, string>;
+  /**
+   * What the check does at this commit. Every commit carries one, so the
+   * verifier can re-run the whole history rather than trusting the messages.
+   */
+  expect: 'pass' | 'fail';
+  /** The state the day-1 session was working against, where the eval needs to find it. */
+  tag?: 'day1-broken';
 }
 
 const GIT_ENV = {
@@ -219,45 +267,60 @@ how release notes are parsed for the changelog.
 `,
 };
 
+const RETRY_A: Edit = { file: 'src/retry.js', from: 'attempt < Number(budget)', to: 'attempt < Number(budget) + 2' };
+const RETRY_B: Edit = {
+  file: 'src/logging.js',
+  from: `  process.stdout.write('[app] ' + message + '\\n');`,
+  to: `  try {\n    process.stdout.write('[app] ' + message + '\\n');\n  } catch {}`,
+};
+const RETRY_C: Edit = { file: 'src/parse.js', from: 'raw.retries', to: 'raw.retry_count' };
+
 const RETRY_HISTORY: readonly Commit[] = [
-  { message: 'chore: initial import' },
-  { message: 'docs: describe the deployment steps' },
+  { message: 'chore: initial import', expect: 'fail', tag: 'day1-broken' },
+  { message: 'docs: describe the deployment steps', expect: 'fail' },
   {
     message: 'fix(retry): raise the retry budget so the check stops failing\n\nFirst attempt at the failing check.',
-    files: { 'src/retry.js': RETRY_FILES['src/retry.js']!.replace('attempt < Number(budget)', 'attempt < Number(budget) + 2') },
+    files: { 'src/retry.js': applyEdit(RETRY_FILES['src/retry.js']!, RETRY_A) },
+    expect: 'fail',
   },
   {
     message: 'revert: raising the retry budget did not fix the failing check\n\nThe check still fails the same way.',
     files: { 'src/retry.js': RETRY_FILES['src/retry.js']! },
+    expect: 'fail',
   },
   {
     message: 'fix(logging): guard the log call blamed for the failing check\n\nSecond attempt at the failing check.',
-    files: { 'src/logging.js': `function log(message) {\n  try {\n    process.stdout.write('[app] ' + message + '\\n');\n  } catch {}\n}\n\nmodule.exports = { log };\n` },
+    files: { 'src/logging.js': applyEdit(RETRY_FILES['src/logging.js']!, RETRY_B) },
+    expect: 'fail',
   },
   {
     message: 'revert: guarding the log call only hid the failing check\n\nStill failing.',
     files: { 'src/logging.js': RETRY_FILES['src/logging.js']! },
+    expect: 'fail',
   },
   {
     message: 'fix(parse): read retry_count, the key the config actually uses\n\nThis is what fixed the failing check.',
-    files: { 'src/parse.js': RETRY_FILES['src/parse.js']!.replace('raw.retries', 'raw.retry_count') },
+    files: { 'src/parse.js': applyEdit(RETRY_FILES['src/parse.js']!, RETRY_C) },
+    expect: 'pass',
   },
-  { message: 'docs: note the parse steps used for release notes' },
+  { message: 'docs: note the parse steps used for release notes', expect: 'pass' },
   // The regression: the fix is undone again, which is where the agent comes in.
   {
     message: 'refactor(parse): simplify config mapping',
     files: { 'src/parse.js': RETRY_FILES['src/parse.js']! },
+    expect: 'fail',
   },
 ];
 
 export const RETRY_REGRESSION: Scenario = {
   name: 'retry-regression',
   command: 'node check.js',
-  deadEndA: 'src/retry.js',
-  deadEndB: 'src/logging.js',
-  fixFile: 'src/parse.js',
-  day1FixFile: 'src/parse.js',
-  task: '`node check.js` is failing in this repository. Find out why and fix it so the command exits 0. Do not change check.js itself.',
+  attemptA: RETRY_A,
+  attemptB: RETRY_B,
+  attemptC: RETRY_C,
+  fix: RETRY_C,
+  task: TASK,
+  history: RETRY_HISTORY,
   build: (dir) => buildRepo(dir, RETRY_FILES, RETRY_HISTORY),
   events: (repoDir) =>
     agentEvents(
@@ -312,19 +375,40 @@ const READER_FIXED = READER_BUGGY.replace(
     }`,
 );
 
-const WRITES_FILES: Record<string, string> = {
-  'check.js': `const { WriteBuffer } = require('./src/writer.js');
+/** Day 1's check exercised the read path only. */
+const WRITES_CHECK_DAY1 = `const { ReadBuffer } = require('./src/reader.js');
 
 (async () => {
-  const buffer = new WriteBuffer(['alpha', 'beta', 'gamma']);
-  const written = await buffer.commit();
+  const read = await new ReadBuffer(['alpha', 'beta', 'gamma']).load();
+  if (read !== 3) {
+    console.error('expected 3 sources loaded, got ' + read);
+    process.exit(1);
+  }
+  console.log('ok');
+})();
+`;
+
+/** Coverage grew later, and the write path had the mistake the read path had already lost. */
+const WRITES_CHECK_TODAY = `const { ReadBuffer } = require('./src/reader.js');
+const { WriteBuffer } = require('./src/writer.js');
+
+(async () => {
+  const read = await new ReadBuffer(['alpha', 'beta', 'gamma']).load();
+  if (read !== 3) {
+    console.error('expected 3 sources loaded, got ' + read);
+    process.exit(1);
+  }
+  const written = await new WriteBuffer(['alpha', 'beta', 'gamma']).commit();
   if (written !== 3) {
     console.error('expected 3 records committed, got ' + written);
     process.exit(1);
   }
   console.log('ok');
 })();
-`,
+`;
+
+const WRITES_FILES: Record<string, string> = {
+  'check.js': WRITES_CHECK_DAY1,
   'src/io.js': `async function persist(record) {
   await new Promise((resolve) => setTimeout(resolve, 1));
   return record.length;
@@ -373,37 +457,81 @@ describes runtime behaviour.
 `,
 };
 
+const FOREACH_BLOCK = (collection: string, item: string) => `    this.${collection}.forEach(async (${item}) => {
+      await persist(${item});`;
+const FOR_OF_BLOCK = (collection: string, item: string) => `    for (const ${item} of this.${collection}) {
+      await persist(${item});`;
+
+const WRITES_A: Edit = { file: 'src/timeouts.js', from: 'FLUSH_TIMEOUT_MS = 250', to: 'FLUSH_TIMEOUT_MS = 2500' };
+const WRITES_B: Edit = { file: 'src/retrypolicy.js', from: 'attempt < 3', to: 'attempt < 5' };
+/** Day 1's answer: await each source in a loop instead of handing forEach an async callback. */
+const WRITES_C: Edit = {
+  file: 'src/reader.js',
+  from: `${FOREACH_BLOCK('sources', 'source')}
+      read += 1;
+    });`,
+  to: `${FOR_OF_BLOCK('sources', 'source')}
+      read += 1;
+    }`,
+};
+/** Today's answer: the same mistake, in the file coverage grew into. */
+const WRITES_FIX: Edit = {
+  file: 'src/writer.js',
+  from: `${FOREACH_BLOCK('records', 'record')}
+      written += 1;
+    });`,
+  to: `${FOR_OF_BLOCK('records', 'record')}
+      written += 1;
+    }`,
+};
+/** Following the memory to reader.js, which has been correct since day 1. */
+const WRITES_STALE: Edit = {
+  file: 'src/reader.js',
+  from: `      await persist(source);
+      read += 1;`,
+  to: `      await persist(source);
+      await Promise.resolve();
+      read += 1;`,
+};
+
 const WRITES_HISTORY: readonly Commit[] = [
-  { message: 'chore: initial import' },
-  { message: 'docs: writer style guide' },
-  { message: 'perf(timeouts): raise the flush timeout for slow disks' },
+  { message: 'chore: initial import', expect: 'fail', tag: 'day1-broken' },
+  { message: 'docs: writer style guide', expect: 'fail' },
+  { message: 'perf(timeouts): raise the flush timeout for slow disks', expect: 'fail' },
   {
     message:
       'fix(reader): await each source in a loop\n\nforEach with an async callback returns before any callback has run, so the\ncounter was read as 0 while the work was still in flight.',
     files: { 'src/reader.js': READER_FIXED },
+    expect: 'pass',
   },
-  { message: 'chore(retrypolicy): keep the attempt ceiling at three' },
-  { message: 'docs: writer style guide, second pass' },
+  { message: 'chore(retrypolicy): keep the attempt ceiling at three', expect: 'pass' },
+  { message: 'docs: writer style guide, second pass', expect: 'pass' },
+  // Coverage grows into the write path, which never had the read path's fix applied to it.
+  {
+    message: 'test(check): exercise the write path as well as the read path',
+    files: { 'check.js': WRITES_CHECK_TODAY },
+    expect: 'fail',
+  },
 ];
 
 export const LOST_WRITES: Scenario = {
   name: 'lost-writes',
   command: 'node check.js',
-  deadEndA: 'src/timeouts.js',
-  deadEndB: 'src/retrypolicy.js',
-  fixFile: 'src/writer.js',
-  day1FixFile: 'src/reader.js',
-  // reader.js is already correct; editing it is following the memory to the wrong file.
-  staleFile: 'src/reader.js',
-  task: '`node check.js` is failing in this repository. Find out why and fix it so the command exits 0. Do not change check.js itself.',
+  attemptA: WRITES_A,
+  attemptB: WRITES_B,
+  attemptC: WRITES_C,
+  fix: WRITES_FIX,
+  staleAttempt: WRITES_STALE,
+  task: TASK,
+  history: WRITES_HISTORY,
   build: (dir) => buildRepo(dir, WRITES_FILES, WRITES_HISTORY),
   events: (repoDir) =>
     agentEvents(
       repoDir,
       'node check.js',
       [
-        { file: 'src/timeouts.js', outcome: 'fail', errorSignature: 'expected 3 records committed, got 0', at: 0 },
-        { file: 'src/retrypolicy.js', outcome: 'fail', errorSignature: 'expected 3 records committed, got 0', at: 10 },
+        { file: 'src/timeouts.js', outcome: 'fail', errorSignature: 'expected 3 sources loaded, got 0', at: 0 },
+        { file: 'src/retrypolicy.js', outcome: 'fail', errorSignature: 'expected 3 sources loaded, got 0', at: 10 },
         { file: 'src/reader.js', outcome: 'ok', at: 20 },
       ],
       'eval-day-1-writes',
@@ -499,40 +627,59 @@ module.exports = { encodeRecord };
  */
 const STALE_ENCODE_REGRESSED = STALE_ENCODE_FIXED.replace("fields.join(';')", "fields.join(',')");
 
+const STALE_SEPARATOR: Edit = {
+  file: 'src/serialize.js',
+  from: `function fieldSeparator() {
+  return ',';
+}`,
+  to: `function fieldSeparator() {
+  return ';';
+}`,
+};
+const STALE_A: Edit = { file: 'src/cache.js', from: 'entries.set(key, value);', to: 'entries.set(String(key), value);' };
+const STALE_B: Edit = { file: 'src/clock.js', from: 'return Date.now();', to: 'return Math.floor(Date.now());' };
+const STALE_FIX_EDIT: Edit = { file: 'src/encode.js', from: `fields.join(',')`, to: `fields.join(';')` };
+
 const STALE_HISTORY: readonly Commit[] = [
-  { message: 'chore: initial import' },
-  { message: 'docs: describe the record format' },
+  { message: 'chore: initial import', expect: 'fail', tag: 'day1-broken' },
+  { message: 'docs: describe the record format', expect: 'fail' },
   {
     message: 'fix(serialize): hand out ";" as the field separator so the check passes\n\nThe check is green again with this.',
     files: { 'src/serialize.js': STALE_SERIALIZE_SEMICOLON },
+    expect: 'pass',
   },
-  { message: 'chore(cache): drop an unused entry helper' },
+  { message: 'chore(cache): drop an unused entry helper', expect: 'pass' },
   {
     message:
       'revert: changing the shared separator broke unicode payloads\n\nBacking this out. The check fails again and needs a different answer.',
     files: { 'src/serialize.js': STALE_FILES['src/serialize.js']! },
+    expect: 'fail',
   },
   {
     message: 'fix(encode): state the field separator here instead of sharing one\n\nThis is the one that held.',
     files: { 'src/encode.js': STALE_ENCODE_FIXED },
+    expect: 'pass',
   },
-  { message: 'style(serialize): tidy the key ordering' },
+  { message: 'style(serialize): tidy the key ordering', expect: 'pass' },
   // The regression: field assembly is rewritten and loses the separator again.
   {
     message: 'refactor(encode): tidy field assembly',
     files: { 'src/encode.js': STALE_ENCODE_REGRESSED },
+    expect: 'fail',
   },
 ];
 
 export const STALE_FIX: Scenario = {
   name: 'stale-fix',
   command: 'node check.js',
-  deadEndA: 'src/cache.js',
-  deadEndB: 'src/clock.js',
-  fixFile: 'src/encode.js',
-  day1FixFile: 'src/serialize.js',
-  staleFile: 'src/serialize.js',
-  task: '`node check.js` is failing in this repository. Find out why and fix it so the command exits 0. Do not change check.js itself.',
+  attemptA: STALE_A,
+  attemptB: STALE_B,
+  attemptC: STALE_SEPARATOR,
+  fix: STALE_FIX_EDIT,
+  // The same edit that was green on day 1. Today encode.js no longer calls it.
+  staleAttempt: STALE_SEPARATOR,
+  task: TASK,
+  history: STALE_HISTORY,
   build: (dir) => buildRepo(dir, STALE_FILES, STALE_HISTORY),
   events: (repoDir) =>
     agentEvents(
