@@ -34,8 +34,31 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const k of ENV_KEYS) process.env[k] = prevEnv[k];
+  // Assigning undefined would set the literal string "undefined", which a later test in
+  // this worker would then read as a real path. A variable that was unset must be deleted.
+  for (const k of ENV_KEYS) {
+    const previous = prevEnv[k];
+    if (previous === undefined) delete process.env[k];
+    else process.env[k] = previous;
+  }
   rmSync(home, { recursive: true, force: true });
+});
+
+describe('environment isolation', () => {
+  it('deletes a variable that was unset instead of writing the string "undefined"', () => {
+    const KEY = 'NEXUSMEM_ENV_RESTORE_PROBE';
+    delete process.env[KEY];
+    const previous = process.env[KEY];
+
+    // The trap: process.env coerces, so restoring an unset variable by assignment
+    // leaves a path-shaped string that a later test in this worker would believe.
+    process.env[KEY] = previous as unknown as string;
+    expect(process.env[KEY]).toBe('undefined');
+
+    // What afterEach does now.
+    if (previous === undefined) delete process.env[KEY];
+    expect(process.env[KEY]).toBeUndefined();
+  });
 });
 
 describe('sanitizeHookLog', () => {
