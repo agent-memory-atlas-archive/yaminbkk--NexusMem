@@ -39,6 +39,20 @@ const quote = (path: string): string => {
   return `"${p.replace(/(["$`\\])/g, '\\$1')}"`;
 };
 
+/**
+ * The paths inside an installed hook command: the node executable and the
+ * script it runs, un-escaped back to what the shell would pass along.
+ *
+ * The inverse of `quote`, so a caller can ask whether an installed command
+ * can still resolve on this machine. Nothing else in a hook command is
+ * quoted, so anything a settings file carries that we did not write yields
+ * whatever quoted runs it happens to contain -- harmless, since the only
+ * question asked of the result is whether the file exists.
+ */
+export function hookCommandPaths(command: string): string[] {
+  return [...command.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => (m[1] ?? '').replace(/\\(.)/g, '$1'));
+}
+
 export function agentHookCommands(
   node = process.execPath,
   captureScript = fileURLToPath(new URL('../../dist/cli/agent-hook.js', import.meta.url)),

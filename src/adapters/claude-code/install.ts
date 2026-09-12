@@ -100,6 +100,8 @@ export interface AgentHookStatus {
   installed: boolean;
   /** False when an installed block points at a different NexusMem path, e.g. after moving the install. */
   upToDate: boolean;
+  /** The NexusMem commands actually in the file, so a caller can check what they point at. */
+  commands: string[];
 }
 
 export function agentHookStatus(settings: ClaudeSettings, commands: AgentHookCommands): AgentHookStatus {
@@ -108,7 +110,7 @@ export function agentHookStatus(settings: ClaudeSettings, commands: AgentHookCom
     .map((h) => h.command ?? '')
     .filter(isNexusMemHook);
 
-  if (present.length === 0) return { installed: false, upToDate: false };
+  if (present.length === 0) return { installed: false, upToDate: false, commands: [] };
   const expected = [commands.capture, commands.recall, commands.sessionStart];
-  return { installed: true, upToDate: expected.every((cmd) => present.includes(cmd)) };
+  return { installed: true, upToDate: expected.every((cmd) => present.includes(cmd)), commands: [...new Set(present)] };
 }

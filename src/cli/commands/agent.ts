@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import pc from 'picocolors';
 import { readCaptureStatus } from '../../agent/capture-health.js';
 import { stripBom } from '../../core/text.js';
-import { agentHookCommands } from '../../agent/hook-command.js';
+import { agentHookCommands, hookCommandPaths } from '../../agent/hook-command.js';
 import { recallFailure, recallSessionStart } from '../../agent/recall.js';
 import { markInjected, shouldInject } from '../../agent/recall-state.js';
 import {
@@ -113,6 +113,13 @@ export async function runAgentStatus(opts: AgentCommandOptions): Promise<number>
   const path = settingsPathFor(scope, opts.cwd);
   const status = agentHookStatus((await readSettings(path)) ?? {}, agentHookCommands());
 
+  // An installed command is a literal string Claude Code hands to a shell in
+  // its own environment. Installing from a different one -- WSL, a container,
+  // another machine -- writes paths nothing here can run, and the hook then
+  // fails with no event, no drop record and nothing on any output. The same
+  // check catches a NexusMem or a Node that moved after the install.
+  const missing = [...new Set(status.commands.flatMap(hookCommandPaths))].filter((p) => !existsSync(p));
+
   // Configuration and evidence are different questions: hooks can be installed
   // and recording nothing, which is the failure this reports.
   const capture = readCaptureStatus();
@@ -136,6 +143,14 @@ export async function runAgentStatus(opts: AgentCommandOptions): Promise<number>
             ? pc.green('yes')
             : pc.yellow('yes, but pointing at a different NexusMem -- run `nexusmem agent install` again')
       }`,
+      // Only when a path is genuinely absent: this must not fire on a healthy install.
+      ...(missing.length > 0
+        ? [
+            `${pc.dim('paths     ')} ${pc.yellow(`${missing.length} path(s) in the installed hook do not exist here`)}`,
+            ...missing.map((p) => `${pc.dim('          ')} ${p}`),
+            `${pc.dim('          ')} ${pc.dim('reinstall from the environment Claude Code runs in')}`,
+          ]
+        : []),
       `${pc.dim('capture   ')} ${CAPTURE_LABEL[capture.health]}`,
       ...(capture.lastEventAt
         ? [`${pc.dim('last event')} ${capture.lastEventAt} ${pc.dim(`(${capture.lastEventKind}, ${capture.lastEventOutcome})`)}`]

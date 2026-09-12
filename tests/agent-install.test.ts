@@ -5,7 +5,7 @@ import { captureDropStatePath, recordCaptureDrop } from '../src/agent/capture-he
 import { agentEventLogPath } from '../src/agent/paths.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type AgentEvent, redactAgentEvent } from '../src/agent/event.js';
-import { type AgentHookCommands, agentHookCommands } from '../src/agent/hook-command.js';
+import { type AgentHookCommands, agentHookCommands, hookCommandPaths } from '../src/agent/hook-command.js';
 import {
   agentHookStatus,
   type ClaudeSettings,
@@ -91,10 +91,19 @@ describe('settings upsert', () => {
   });
 
   it('reports status, including a block pointing at a different install', () => {
-    expect(agentHookStatus({}, COMMANDS)).toEqual({ installed: false, upToDate: false });
-    expect(agentHookStatus(upsertAgentHooks({}, COMMANDS), COMMANDS)).toEqual({ installed: true, upToDate: true });
+    expect(agentHookStatus({}, COMMANDS)).toEqual({ installed: false, upToDate: false, commands: [] });
+    expect(agentHookStatus(upsertAgentHooks({}, COMMANDS), COMMANDS)).toMatchObject({ installed: true, upToDate: true });
 
-    expect(agentHookStatus(upsertAgentHooks({}, OLD_COMMANDS), COMMANDS)).toEqual({ installed: true, upToDate: false });
+    expect(agentHookStatus(upsertAgentHooks({}, OLD_COMMANDS), COMMANDS)).toMatchObject({ installed: true, upToDate: false });
+  });
+
+  it('hands back the commands that are in the file, deduplicated', () => {
+    // capture is installed on two events, so the same string appears twice.
+    expect(agentHookStatus(upsertAgentHooks({}, COMMANDS), COMMANDS).commands).toEqual([
+      COMMANDS.sessionStart,
+      COMMANDS.capture,
+      COMMANDS.recall,
+    ]);
   });
 });
 
@@ -105,6 +114,14 @@ describe('hook command', () => {
     expect(commands.capture).toBe('"C:/Program Files/nodejs/node.exe" "D:/nm/dist/cli/agent-hook.js"');
     expect(commands.recall).toBe('"C:/Program Files/nodejs/node.exe" "D:/nm/dist/cli/index.js" agent recall --trigger failure');
     expect(commands.capture + commands.recall).not.toContain('\\');
+  });
+
+  it('reads its own quoting back, so an installed command can be checked against this filesystem', () => {
+    const { capture, recall } = agentHookCommands('C:\\Program Files\\nodejs\\node.exe', 'D:\\nm\\dist\\cli\\agent-hook.js', '/home/u/pa$id/index.js');
+
+    expect(hookCommandPaths(capture)).toEqual(['C:/Program Files/nodejs/node.exe', 'D:/nm/dist/cli/agent-hook.js']);
+    // The escaping is undone: what comes back is the path, not the shell's spelling of it.
+    expect(hookCommandPaths(recall)).toEqual(['C:/Program Files/nodejs/node.exe', '/home/u/pa$id/index.js']);
   });
 
   it('escapes what a shell would still read inside double quotes', () => {
@@ -326,6 +343,36 @@ describe('nexusmem agent (CLI)', () => {
       expect(text).toContain('(command, fail)');
       expect(text).not.toContain(secret);
       expect(text).not.toContain('psql');
+    });
+
+    it('says so when the installed hook points at paths this machine does not have', async () => {
+      // Reproduced live: hooks installed inside WSL, then run by the Windows
+      // Claude Code binary, capture nothing at all -- no event, no drop
+      // record, no output. `status` is the only place that can say why.
+      const path = join(dir, '.claude', 'settings.local.json');
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(
+        path,
+        JSON.stringify({
+          hooks: {
+            PostToolUse: [
+              { matcher: 'Bash', hooks: [{ type: 'command', command: '"/nexusmem-phase4-elsewhere/bin/node" "/nexusmem-phase4-elsewhere/dist/cli/agent-hook.js"' }] },
+            ],
+          },
+        }),
+      );
+
+      const text = await status();
+      expect(text).toMatch(/installed\s+yes/);
+      expect(text).toContain('2 path(s) in the installed hook do not exist here');
+      expect(text).toContain('/nexusmem-phase4-elsewhere/dist/cli/agent-hook.js');
+      expect(text).toContain('reinstall from the environment Claude Code runs in');
+    });
+
+    it('says nothing about paths for an install whose paths are all here', async () => {
+      await runAgentInstall({ cwd: dir, scope: 'project', out: () => {} });
+
+      expect(await status()).not.toContain('do not exist here');
     });
 
     it('prints nothing about drops when there have been none', async () => {
