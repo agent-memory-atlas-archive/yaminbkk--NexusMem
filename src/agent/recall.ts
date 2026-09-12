@@ -115,42 +115,103 @@ const MAX_DIGEST_COMMANDS = 3;
 
 export interface SessionDigest {
   text: string;
+  /** Counts by state, for the eval and for `--json`. */
+  resolved: number;
+  stale: number;
   unresolved: number;
 }
 
+type CommandState = 'resolved' | 'stale' | 'unresolved';
+
+interface CommandSummary {
+  command: string;
+  /** This command's most recent failure in the window. */
+  newestTs: string;
+  state: CommandState;
+  /** When state is 'resolved' or 'stale': when the (possibly no-longer-holding) fix landed. */
+  fixTs?: string;
+}
+
+/** Resolved chains are shown first regardless of recency -- see the doc comment below. */
+const STATE_PRIORITY: Record<CommandState, number> = { resolved: 0, stale: 1, unresolved: 2 };
+
 /**
- * What is worth knowing when a session opens: commands that failed here
- * recently and that nothing has been recorded as fixing.
+ * What is worth knowing when a session opens.
  *
- * Returns null far more often than not, which is the point -- a repository
- * with no unresolved failures gets no session opener at all.
+ * This used to mean only "commands that failed here recently and that
+ * nothing has fixed" -- which excluded the single most useful thing NexusMem
+ * can say, "this failed before, and here is what fixed it", for the sole
+ * reason that it *was* fixed. A resolved failure->fix chain is the most
+ * actionable memory there is, so it is now listed ahead of an unrelated
+ * failure with no known answer, even when the latter is more recent.
+ *
+ * Per command, only the MOST RECENT occurrence in the window decides the
+ * state: if it has a recorded fix, the chain is 'resolved'; if it does not
+ * but an OLDER occurrence of the exact same command did, that fix has since
+ * stopped holding -- said as 'stale', not silently dropped and not repeated
+ * as if it still applied; otherwise it is plain 'unresolved'.
+ *
+ * Returns null only when there is truly nothing in the window -- a
+ * repository whose only history is fully resolved chains now gets a digest,
+ * not silence, which is the deliberate behaviour change here.
  */
 export function recallSessionStart(store: MemoryStore, projectId: string, now = new Date()): SessionDigest | null {
   const since = new Date(now.getTime() - DIGEST_WINDOW_DAYS * 86_400_000).toISOString();
   const rows = store.raw.prepare(SELECT_RECENT_FAILURES).all(projectId, since) as NodeRow[];
 
-  // One entry per command: ten failures of one command is one problem, not ten.
-  const byCommand = new Map<string, string>();
+  // Rows arrive newest-first (the query orders by ts DESC); grouping
+  // preserves that, so each group's first entry is that command's most
+  // recent failure in the window.
+  const byCommand = new Map<string, NodeRow[]>();
   for (const row of rows) {
-    if (store.getLinkedNodeIds(row.id, RESOLVED_BY_RETRY).length > 0) continue;
     const command = (JSON.parse(row.meta) as { command?: string }).command?.split(/\r?\n/)[0]?.trim();
-    if (!command || byCommand.has(command)) continue;
-    byCommand.set(command, row.ts);
+    if (!command) continue;
+    const group = byCommand.get(command);
+    if (group) group.push(row);
+    else byCommand.set(command, [row]);
   }
   if (byCommand.size === 0) return null;
 
-  const listed = [...byCommand].slice(0, MAX_DIGEST_COMMANDS);
-  const lines = listed.map(([command, ts]) => `- ${command} (last failed ${day(ts)})`);
-  const more = byCommand.size > listed.length ? ` and ${byCommand.size - listed.length} other(s)` : '';
+  const summaries: CommandSummary[] = [];
+  for (const [command, [newest, ...older]] of byCommand) {
+    const [newestFixId] = store.getLinkedNodeIds(newest!.id, RESOLVED_BY_RETRY);
+    if (newestFixId) {
+      const fix = store.raw.prepare(SELECT_BY_ID).get(newestFixId) as NodeRow | undefined;
+      summaries.push({ command, newestTs: newest!.ts, state: 'resolved', fixTs: fix?.ts });
+      continue;
+    }
+    const staleFixId = older.map((row) => store.getLinkedNodeIds(row.id, RESOLVED_BY_RETRY)[0]).find((id): id is string => id !== undefined);
+    if (staleFixId) {
+      const fix = store.raw.prepare(SELECT_BY_ID).get(staleFixId) as NodeRow | undefined;
+      summaries.push({ command, newestTs: newest!.ts, state: 'stale', fixTs: fix?.ts });
+    } else {
+      summaries.push({ command, newestTs: newest!.ts, state: 'unresolved' });
+    }
+  }
+
+  summaries.sort((a, b) => STATE_PRIORITY[a.state] - STATE_PRIORITY[b.state] || (b.newestTs < a.newestTs ? -1 : 1));
+
+  const listed = summaries.slice(0, MAX_DIGEST_COMMANDS);
+  const lines = listed.map((s) => {
+    if (s.state === 'resolved') return `- ${s.command} (failed here before, fixed ${day(s.fixTs!)})`;
+    if (s.state === 'stale') {
+      return `- ${s.command} (fixed ${day(s.fixTs!)}, but failed again ${day(s.newestTs)} -- that fix no longer holds)`;
+    }
+    return `- ${s.command} failed ${day(s.newestTs)} with no recorded fix`;
+  });
+  const more = summaries.length > listed.length ? ` and ${summaries.length - listed.length} other(s)` : '';
+
+  const counts = { resolved: 0, stale: 0, unresolved: 0 };
+  for (const s of summaries) counts[s.state] += 1;
 
   return {
     text: [
-      `NexusMem: ${byCommand.size} command(s) failed in this repository in the last ${DIGEST_WINDOW_DAYS} days with no recorded fix${more}:`,
+      `NexusMem: ${summaries.length} relevant command(s) from the last ${DIGEST_WINDOW_DAYS} days${more}:`,
       ...lines,
       'This history is searchable with the nexusmem MCP tools if one of them comes up.',
     ]
       .join('\n')
       .slice(0, MAX_DIGEST_CHARS),
-    unresolved: byCommand.size,
+    ...counts,
   };
 }

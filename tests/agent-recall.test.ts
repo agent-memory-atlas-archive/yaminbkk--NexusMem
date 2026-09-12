@@ -134,10 +134,97 @@ describe('recallSessionStart', () => {
     expect(recallSessionStart(store, PROJECT, NOW)).toBeNull();
   });
 
-  it('says nothing once every failure has a recorded fix', () => {
+  it('shows the resolved chain once every failure has a recorded fix, instead of staying silent', () => {
+    // This is the exact case the digest used to hide: `git log`-worthy
+    // history that answers the question outright. Silence here was the
+    // backwards behaviour the Phase-5 eval flagged -- the tester's own
+    // "failure -> fix" case was excluded by definition because it *was*
+    // fixed. This replaces the old "says nothing" expectation.
     seedDayOne();
     correlateFailures(store, PROJECT);
-    expect(recallSessionStart(store, PROJECT, NOW)).toBeNull();
+
+    const digest = recallSessionStart(store, PROJECT, NOW);
+    expect(digest).not.toBeNull();
+    expect(digest!.resolved).toBe(1);
+    expect(digest!.text).toContain('npm test');
+    expect(digest!.text).toContain('fixed');
+  });
+
+  it('ranks a resolved chain ahead of an unrelated unresolved failure, even when the slots are scarce', () => {
+    seedDayOne(); // 'npm test': fails, fails, then a fix -- resolved once correlated.
+    correlateFailures(store, PROJECT);
+    // Four more distinct, unresolved commands -- more than MAX_DIGEST_COMMANDS
+    // on their own, so the resolved chain survives only by being preferred.
+    store.upsertNodes(
+      collectAgentEvents(
+        ['cargo build', 'go test', 'make lint', 'pytest'].map((command, i) => event({ command, ts: at(30 + i) })),
+        PROJECT,
+        { repoRoot: ROOT },
+      ),
+    );
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.resolved).toBe(1);
+    expect(digest.unresolved).toBe(4);
+    const lines = digest.text.split('\n').filter((l) => l.startsWith('- '));
+    expect(lines[0]).toContain('npm test');
+    expect(lines[0]).toContain('fixed');
+    expect(digest.text).toContain('other(s)');
+  });
+
+  it('marks a fix as stale, rather than repeating it, once the same command has failed again since', () => {
+    // The eval's own adversarial scenario: a fix that held once is not
+    // evidence it still applies. Saying "fixed" unqualified here would be
+    // exactly the confident-false-relationship CLAUDE.md's Evidence section
+    // warns against.
+    const command = 'npm test';
+    store.upsertNodes(collectAgentEvents([event({ command, ts: at(0) })], PROJECT, { repoRoot: ROOT }));
+    // An edit before the retry: the retry heuristic only links a pass to an
+    // agent-recorded failure when something was actually changed in between
+    // (see failure-fix.ts) -- an identical pass with no edit is a flake, not a fix.
+    store.upsertNodes(
+      collectAgentEvents(
+        [event({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(1) }), event({ command, outcome: 'ok', exitCode: 0, ts: at(2) })],
+        PROJECT,
+        { repoRoot: ROOT },
+      ),
+    );
+    correlateFailures(store, PROJECT); // links the day-1 failure to the day-1 fix
+    // The exact same command fails again, later, with nothing recorded as fixing it this time.
+    store.upsertNodes(collectAgentEvents([event({ command, ts: at(10) })], PROJECT, { repoRoot: ROOT }));
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.stale).toBe(1);
+    expect(digest.resolved).toBe(0);
+    expect(digest.text).toContain('npm test');
+    expect(digest.text).toContain('no longer holds');
+  });
+
+  it('does not let a generic command repeated many times crowd out a resolved chain for something else', () => {
+    seedDayOne(); // 'npm test' -- resolved
+    correlateFailures(store, PROJECT);
+    // Five failures of a different command -- collapses to one line (existing
+    // dedup) and must not outrank the resolved chain by sheer repetition.
+    store.upsertNodes(
+      collectAgentEvents(
+        Array.from({ length: 5 }, (_, i) => event({ command: 'npm run build', ts: at(40 + i) })),
+        PROJECT,
+        { repoRoot: ROOT },
+      ),
+    );
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.text.match(/npm run build/g)).toHaveLength(1);
+    const lines = digest.text.split('\n').filter((l) => l.startsWith('- '));
+    expect(lines[0]).toContain('npm test');
+    expect(lines[0]).toContain('fixed');
+  });
+
+  it('a resolved chain outside the window stays silent, same as an unresolved one would', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+    const farFuture = new Date(NOW.getTime() + 40 * 86_400_000);
+    expect(recallSessionStart(store, PROJECT, farFuture)).toBeNull();
   });
 
   it('lists commands that failed with no fix, one line each', () => {
