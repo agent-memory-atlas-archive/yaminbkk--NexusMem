@@ -264,4 +264,17 @@ describe('parseHookPayloadDetailed: exit-status recovery end to end', () => {
     });
     expect(parseHookPayloadDetailed(success('EXIT:abc'), NOW)).toMatchObject({ ok: true, event: { outcome: 'ok', exitCode: 0 } });
   });
+
+  it('recovers the exit status without ever persisting the raw stdout it came from', () => {
+    // Redaction (`redactAgentEvent`) only ever touches `command` and
+    // `errorSignature` -- `tool_response.stdout` is read for the echo line
+    // and then discarded, so a secret sitting elsewhere in that output can
+    // never reach the stored event, redacted or not.
+    const secret = 'sk-live-abcdef123456';
+    const command = `psql postgres://app:${secret}@db/app`;
+    const outcome = parseHookPayloadDetailed(success(`leaked ${secret}\nEXIT:1`, { tool_input: { command } }), NOW);
+
+    expect(outcome).toMatchObject({ ok: true, event: { command: expect.not.stringContaining(secret), outcome: 'fail', exitCode: 1 } });
+    expect(JSON.stringify(outcome)).not.toContain(secret);
+  });
 });
