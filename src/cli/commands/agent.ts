@@ -264,8 +264,8 @@ export async function runAgentRecall(opts: AgentRecallOptions = {}): Promise<num
   try {
     const raw = opts.input ?? (await readStdin());
     const event = parseHookPayload(raw, new Date().toISOString());
-    if (!event || event.kind !== 'command' || event.outcome !== 'fail' || !event.commandHash || !event.cwd) return 0;
-    if (!shouldInject(event.sessionId, event.commandHash)) return 0;
+    if (!event || event.kind !== 'command' || event.outcome !== 'fail' || !event.execHash || !event.cwd) return 0;
+    if (!shouldInject(event.sessionId, event.execHash)) return 0;
 
     const repo = await readRepoInfo(event.cwd);
     const ws = resolveWorkspace(repo.root);
@@ -276,13 +276,13 @@ export async function runAgentRecall(opts: AgentRecallOptions = {}): Promise<num
     const store = MemoryStore.open(ws.dbPath);
     let recall: ReturnType<typeof recallFailure>;
     try {
-      recall = recallFailure(store, projectId, event.commandHash);
+      recall = recallFailure(store, projectId, event.execHash);
     } finally {
       store.close();
     }
     if (!recall) return 0;
 
-    markInjected(event.sessionId, event.commandHash);
+    markInjected(event.sessionId, event.execHash);
     out(
       `${JSON.stringify({
         hookSpecificOutput: { hookEventName: 'PostToolUseFailure', additionalContext: recall.text },

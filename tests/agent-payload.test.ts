@@ -62,6 +62,8 @@ describe('parseHookPayload', () => {
       kind: 'command',
       command: 'ls ./no-such-dir-xyz',
       commandHash: sha256Hex('ls ./no-such-dir-xyz').slice(0, 12),
+      // No `cd` prefix to strip, so it's the same hash as commandHash.
+      execHash: sha256Hex('ls ./no-such-dir-xyz').slice(0, 12),
       outcome: 'fail',
       exitCode: 2,
       errorSignature: "ls: cannot access './no-such-dir-xyz': No such file or directory",

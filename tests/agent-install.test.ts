@@ -538,6 +538,24 @@ describe('nexusmem agent recall (CLI)', () => {
     expect(sha256Hex(withSecret)).not.toBe(sha256Hex('psql postgres://app:two@db/app'));
   });
 
+  it('finds a bare historical command from a live command Claude Code wrapped in "cd <cwd> &&"', async () => {
+    // The exact shape the eval measured: 14 of 17 real Bash calls were
+    // prefixed this way, and the old raw-hash match could never find them.
+    await seedFailure('npm test');
+
+    const hit: string[] = [];
+    await runAgentRecall({ input: payload(`cd "${dir}" && npm test`), out: (c) => hit.push(c) });
+    expect(hit.join('')).toContain('failed in this repository before');
+  });
+
+  it('does not match when the cd target is a different directory', async () => {
+    await seedFailure('npm test');
+
+    const miss: string[] = [];
+    await runAgentRecall({ input: payload('cd /somewhere/else && npm test'), out: (c) => miss.push(c) });
+    expect(miss.join('')).toBe('');
+  });
+
   const sessionStartPayload = (over: Record<string, unknown> = {}) =>
     JSON.stringify({ session_id: 'sess-start', cwd: dir, hook_event_name: 'SessionStart', source: 'startup', ...over });
 

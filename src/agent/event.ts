@@ -1,5 +1,6 @@
 import { redact } from '../conversation/redact.js';
 import { sha256Hex } from '../core/ids.js';
+import { normalizePathForCompare } from '../shell/detect.js';
 
 /**
  * One attempt a coding agent made: a command it ran, or a file it edited.
@@ -41,7 +42,36 @@ export interface AgentEvent extends Omit<RawAgentEvent, 'command' | 'errorSignat
   command?: string;
   /** sha256 prefix of the RAW command: correlation matches on this, never on redacted text. */
   commandHash?: string;
+  /**
+   * sha256 prefix of the raw command with a same-cwd `cd` prefix stripped --
+   * see `canonicalizeCommand`. This is what `agent recall` matches on: a live
+   * `cd "<cwd>" && npm test` has to find a historical bare `npm test` in the
+   * same project. Equal to `commandHash` whenever there is no such prefix,
+   * which is every command recorded before this field existed.
+   */
+  execHash?: string;
   errorSignature?: string;
+}
+
+/**
+ * A leading `cd <path> && ` is transport, not a different command, exactly
+ * when `<path>` is the cwd the event already carries -- Claude Code's own
+ * habit of `cd`-ing into the repo before every command it runs. Stripping it
+ * is the one normalization this makes: a `cd` to anywhere else, an inline
+ * env-var assignment, `sudo`, a pipe, or a second command joined by `;` or
+ * `&&` are all left untouched, because each of those can change what actually
+ * ran (or cannot be proven not to), and a wrong match here is worse than a
+ * missed one. Not fuzzy matching -- a single, narrow, provably-safe rewrite.
+ */
+const CD_PREFIX = /^\s*cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))\s*&&\s*([\s\S]+)$/;
+
+export function canonicalizeCommand(command: string, cwd: string | null): string {
+  if (!cwd) return command;
+  const match = CD_PREFIX.exec(command);
+  if (!match) return command;
+  const target = match[1] ?? match[2] ?? match[3] ?? '';
+  if (target !== '.' && normalizePathForCompare(target) !== normalizePathForCompare(cwd)) return command;
+  return match[4]!;
 }
 
 /** Long enough to identify a failure, short enough that a stack trace never lands in the DB. */
@@ -58,7 +88,11 @@ export function redactAgentEvent(raw: RawAgentEvent): AgentEvent {
     ...rest,
     ...(command === undefined
       ? {}
-      : { command: redact(command).text, commandHash: sha256Hex(command).slice(0, 12) }),
+      : {
+          command: redact(command).text,
+          commandHash: sha256Hex(command).slice(0, 12),
+          execHash: sha256Hex(canonicalizeCommand(command, raw.cwd)).slice(0, 12),
+        }),
     ...(errorSignature === undefined ? {} : { errorSignature: redact(errorSignature).text.slice(0, MAX_ERROR_SIGNATURE_CHARS) }),
   };
 }

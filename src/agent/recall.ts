@@ -5,10 +5,13 @@ import type { MemoryStore } from '../store/store.js';
  * Looks up what already happened the last time this exact command failed in
  * this repository, and renders it for an agent to read.
  *
- * Deliberately narrow. It matches on `commandHash` -- the hash of the raw
- * command, so two redacted commands that render the same text can never be
- * confused -- and returns nothing at all when there is no match. Silence is
- * the default, and no model, embedding or network call is on this path.
+ * Deliberately narrow. It matches on `execHash` -- the hash of the raw
+ * command with only a same-cwd `cd` prefix stripped (see
+ * `canonicalizeCommand` in `agent/event.ts`), so two redacted commands that
+ * render the same text can never be confused, and a live `cd "<cwd>" && npm
+ * test` still finds a historical bare `npm test` -- and returns nothing at
+ * all when there is no match. Silence is the default, and no model,
+ * embedding or network call is on this path.
  */
 
 /** ~300 tokens. An injection that grows past this stops being cheap enough to be automatic. */
@@ -35,7 +38,7 @@ const SELECT_BY_HASH = `
   FROM nodes n
   WHERE n.project_id = ?
     AND n.kind = 'shell_command'
-    AND json_extract(n.meta, '$.commandHash') = ?
+    AND json_extract(n.meta, '$.execHash') = ?
     AND json_extract(n.meta, '$.exitCode') IS NOT NULL
     AND json_extract(n.meta, '$.exitCode') != 0
   ORDER BY n.ts DESC
@@ -67,13 +70,13 @@ function describeAttempt(row: NodeRow): string {
 }
 
 /**
- * `commandHash` comes from the failing command the agent just ran. The node
+ * `execHash` comes from the failing command the agent just ran. The node
  * for that run is not in the database yet -- it is ingested by the next sync --
  * so what comes back is genuinely the past, not the present failure.
  */
-export function recallFailure(store: MemoryStore, projectId: string, commandHash: string): FailureRecall | null {
+export function recallFailure(store: MemoryStore, projectId: string, execHash: string): FailureRecall | null {
   const db = store.raw;
-  const past = db.prepare(SELECT_BY_HASH).all(projectId, commandHash, MAX_PAST_FAILURES) as NodeRow[];
+  const past = db.prepare(SELECT_BY_HASH).all(projectId, execHash, MAX_PAST_FAILURES) as NodeRow[];
   if (past.length === 0) return null;
 
   const lines: string[] = [];
