@@ -26,7 +26,11 @@ jobs:
       # Windows one before it has reported.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # macOS is here because the README's install path never had a runner
+        # behind it: `better-sqlite3` has to resolve a darwin-arm64 prebuild,
+        # and the agent hook command is a POSIX path a shell has to parse.
+        # Neither was tested anywhere until now.
+        os: [ubuntu-latest, windows-latest, macos-latest]
         # The lower bound is the floor package.json claims, so the claim is
         # tested rather than asserted.
         #
