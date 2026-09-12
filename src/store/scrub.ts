@@ -47,7 +47,11 @@ export interface ScrubReport {
   contradictionReasonsChanged: number;
   embeddingsDropped: number;
   reembedded: number;
-  /** Redacted nodes still without a vector; the next `sync` embeds them. */
+  /**
+   * Nodes in the touched projects still without a vector; the next `sync` embeds them.
+   * Not clamped to the rows this run changed: re-embedding drains whatever the project
+   * already owed, so both this and `reembedded` can exceed `embeddingsDropped`.
+   */
   embeddingsPending: number;
   /** Written only when rows actually change. It is a pre-redaction copy. */
   backupPath: string | null;
@@ -273,7 +277,9 @@ export async function scrubDatabase(dbPath: string, opts: ScrubOptions): Promise
       contradictionReasonsChanged: applied.reasons.length,
       embeddingsDropped: dropped,
       reembedded,
-      embeddingsPending: Math.min(pending, dropped),
+      // Reported as measured: clamping this to the rows scrub changed made a project with
+      // an embedding backlog look finished when it was not.
+      embeddingsPending: pending,
       backupPath,
       remnantsPurged,
     };

@@ -161,6 +161,25 @@ describe('scrubDatabase', () => {
     expect(r.embeddingsPending).toBe(r.embeddingsDropped);
   });
 
+  it('re-embedding drains the project backlog too, and says so instead of clamping the count', async () => {
+    // Three nodes that have nothing to do with the secret and were never embedded.
+    withStore(dbPath, (store) =>
+      store.upsertNodes(
+        [1, 2, 3].map((n) =>
+          node({ id: `backlog-${n}`, kind: 'note', source: 'x', title: `note ${n}`, body: `unrelated note ${n}` }),
+        ),
+      ),
+    );
+
+    const r = await scrubDatabase(dbPath, { apply: true, embeddingProvider: new FakeEmbeddingProvider(EMBEDDING_DIM) });
+
+    // Documents today's behaviour rather than endorsing it: the work is the project's
+    // whole pending set, not just the rows this run changed.
+    expect(r.embeddingsDropped).toBe(4);
+    expect(r.reembedded).toBe(7);
+    expect(r.embeddingsPending).toBe(0);
+  });
+
   it('control: the seeded legacy database really holds the secret on disk', () => {
     expect(onDisk(dbPath, SECRET)).toBe(true);
   });
