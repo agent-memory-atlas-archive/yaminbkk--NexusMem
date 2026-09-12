@@ -11,7 +11,7 @@ import { readRepoInfo } from '../src/git/repo.js';
 import { hookLogPath } from '../src/shell/paths.js';
 import { reconcileProjectId } from '../src/store/reconcile.js';
 import { EMBEDDING_DIM } from '../src/store/schema.js';
-import { scrubDatabase } from '../src/store/scrub.js';
+import { scrubDatabase, ScrubBackupError } from '../src/store/scrub.js';
 import { MemoryStore } from '../src/store/store.js';
 import { FakeEmbeddingProvider } from '../src/vector/embed.js';
 import { embedPendingNodes } from '../src/vector/sync.js';
@@ -127,6 +127,21 @@ describe('scrubDatabase', () => {
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('refuses to scrub, and leaves no copy behind, when the backup cannot be protected', async () => {
+    const before = readFileSync(dbPath);
+
+    await expect(
+      scrubDatabase(dbPath, {
+        apply: true,
+        protectBackup: () => Promise.reject(new Error('EPERM: operation not permitted')),
+      }),
+    ).rejects.toThrow(ScrubBackupError);
+
+    // Nothing scrubbed, and the unprotected pre-redaction copy is gone rather than left on disk.
+    expect(readFileSync(dbPath).equals(before)).toBe(true);
+    expect(backups()).toEqual([]);
   });
 
   it('control: the seeded legacy database really holds the secret on disk', () => {

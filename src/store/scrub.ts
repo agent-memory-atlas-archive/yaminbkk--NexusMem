@@ -1,4 +1,4 @@
-import { chmod, readdir } from 'node:fs/promises';
+import { chmod, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { redact, type RedactProfile } from '../conversation/redact.js';
@@ -62,9 +62,17 @@ export interface ScrubOptions {
   /** Re-embeds the redacted nodes right away; null leaves that to the next sync. */
   embeddingProvider?: EmbeddingProvider | null;
   now?: Date;
+  /**
+   * Restricts the backup's permissions. Injectable only so the failure path can
+   * be tested; production always uses chmod.
+   */
+  protectBackup?: (path: string) => Promise<void>;
 }
 
 export class ScrubRaceError extends Error {}
+
+/** The pre-redaction copy could not be protected, so nothing was scrubbed. */
+export class ScrubBackupError extends Error {}
 
 function scrubMeta(kind: ScrubKind, raw: string): string {
   let meta: unknown;
@@ -201,7 +209,18 @@ export async function scrubDatabase(dbPath: string, opts: ScrubOptions): Promise
       const stamp = (opts.now ?? new Date()).toISOString().replace(/[:.]/g, '-');
       backupPath = `${dbPath}.backup-${stamp}-pre-scrub-secrets`;
       await db.backup(backupPath);
-      await chmod(backupPath, 0o600).catch(() => {});
+      // The backup holds every secret this run is about to remove. If it cannot be
+      // restricted, stop before touching the database: leaving an unprotected copy
+      // behind is worse than not scrubbing yet. (On Windows chmod only clears the
+      // read-only bit; it is not an ACL, so this is a floor, not a guarantee.)
+      try {
+        await (opts.protectBackup ?? ((path: string) => chmod(path, 0o600)))(backupPath);
+      } catch (err) {
+        await rm(backupPath, { force: true }).catch(() => {});
+        throw new ScrubBackupError(
+          `could not restrict permissions on the backup (${(err as Error).message}) -- nothing was scrubbed`,
+        );
+      }
     }
 
     const updateNode = db.prepare('UPDATE nodes SET title = ?, body = ?, meta = ? WHERE rowid = ?');
