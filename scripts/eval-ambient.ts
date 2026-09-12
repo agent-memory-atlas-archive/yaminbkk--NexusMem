@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { redactAgentEvent } from '../src/agent/event.js';
 import { SCENARIOS, type Scenario } from '../eval/ambient/scenario.js';
@@ -69,6 +69,10 @@ interface RunResult {
   commandPassesAfter: boolean;
   firstEditedFile: string | null;
   firstEditWasDeadEnd: boolean;
+  /** The very first thing the run did, tool name and a short form of its input. */
+  firstInvestigationAction: string | null;
+  /** What the working tree actually differs by at the end. */
+  finalChangedFiles: string[];
   /** Tool calls made before the first edit of the file that actually fixes it. */
   toolCallsBeforeFix: number | null;
   msToFix: number | null;
@@ -85,6 +89,9 @@ interface RunResult {
   injectedChars: number;
   /** Injections naming an unrelated command and not the task's own. */
   irrelevantInjections: number;
+  /** Bullet lines inside the injections: one recalled item each. */
+  recallItems: number;
+  irrelevantRecallItems: number;
   /** Did the failure recall -- the feature the tester said they would miss -- actually fire? */
   recallFired: boolean;
   /** Did the session-start digest fire? */
@@ -130,6 +137,12 @@ function preflightAmbient(scenario: Scenario, repoDir: string, nmHome: string): 
   const dbPath = join(repoDir, '.nexusmem', 'memory.db');
   if (readFileSync(dbPath).includes(Buffer.from(EVAL_SECRET))) return 'security: the raw fake credential reached the database';
 
+  // eslint-disable-next-line no-control-regex
+  const status = run(process.execPath, [CLI, 'agent', 'status', '--project', '-C', repoDir], { env }).replace(/\x1b\[[0-9;]*m/g, '');
+  if (!/installed\s+yes/.test(status)) return `install: agent status does not report the hooks as installed\n${status}`;
+  if (/do not exist here/.test(status)) return 'install: the installed hook points at paths this machine does not have';
+  if (/capture\s+degraded/.test(status)) return 'capture: health is degraded, so events are being dropped';
+
   const payload = JSON.stringify({
     session_id: 'preflight',
     cwd: repoDir,
@@ -157,6 +170,32 @@ function preflightAmbient(scenario: Scenario, repoDir: string, nmHome: string): 
   }
   for (const unrelated of UNRELATED_COMMANDS) {
     if (text.includes(unrelated)) return `recall: unrelated command "${unrelated}" leaked into the failure recall`;
+  }
+  return null;
+}
+
+/**
+ * §7 for the other arm: an MCP server that failed to start would make the mcp
+ * arm a second baseline without saying so. Speaks the protocol directly rather
+ * than trusting that the config file is enough.
+ */
+function preflightMcp(repoDir: string, nmHome: string): string | null {
+  const rpc = [
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'eval', version: '0' } } }),
+    JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+  ].join('\n');
+  const server = spawnSync(process.execPath, [CLI, 'mcp'], {
+    cwd: repoDir,
+    env: { ...process.env, NEXUSMEM_HOME: nmHome },
+    input: `${rpc}\n`,
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  const out = server.stdout ?? '';
+  if (!out.includes('"tools"')) return `mcp: the server returned no tool list\n${(server.stderr ?? '').slice(0, 200)}`;
+  for (const tool of ['search_memory', 'list_recent_memory', 'get_status']) {
+    if (!out.includes(`"${tool}"`)) return `mcp: ${tool} is not offered by the server`;
   }
   return null;
 }
@@ -225,6 +264,8 @@ interface Transcript {
   injections: string[];
   nexusMemToolCalls: number;
   noticedNexusMem: boolean;
+  /** The first tool call of the run, as `name: short input`. */
+  firstAction: string | null;
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -237,6 +278,7 @@ const EMPTY_TRANSCRIPT: Transcript = {
   injections: [],
   nexusMemToolCalls: 0,
   noticedNexusMem: false,
+  firstAction: null,
 };
 
 function transcriptPath(sessionId: string): string | null {
@@ -252,6 +294,7 @@ function transcriptPath(sessionId: string): string | null {
 /** Reads the session transcript for what the model actually did and was shown. */
 function readTranscript(path: string, repoDir: string): Transcript {
   const t: Transcript = { ...EMPTY_TRANSCRIPT, editedFiles: [], editIndex: new Map(), editMs: new Map(), injections: [] };
+  const shorten = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').slice(0, 90);
   let startedAt: number | null = null;
 
   for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
@@ -285,6 +328,10 @@ function readTranscript(path: string, repoDir: string): Transcript {
       if (block.type === 'tool_use') {
         t.toolCalls += 1;
         const name = String(block.name ?? '');
+        if (t.firstAction === null) {
+          const input = block.input as Record<string, unknown> | undefined;
+          t.firstAction = `${name}: ${shorten(input?.command ?? input?.pattern ?? input?.file_path ?? input?.query ?? '')}`;
+        }
         if (name.startsWith('mcp__nexusmem__')) t.nexusMemToolCalls += 1;
         if (EDIT_TOOLS.has(name)) {
           const filePath = String((block.input as Record<string, unknown> | undefined)?.file_path ?? '');
@@ -315,17 +362,30 @@ function readTranscript(path: string, repoDir: string): Transcript {
   return t;
 }
 
-function scoreRepo(repoDir: string, scenario: Scenario): { commandPasses: boolean } {
+function scoreRepo(repoDir: string, scenario: Scenario): { commandPasses: boolean; changed: string[] } {
   const [exe, ...rest] = scenario.command.split(' ');
-  return { commandPasses: spawnSync(exe!, rest, { cwd: repoDir, encoding: 'utf8' }).status === 0 };
+  const changed = run('git', ['-C', repoDir, 'diff', '--name-only', 'HEAD'])
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return { commandPasses: spawnSync(exe!, rest, { cwd: repoDir, encoding: 'utf8' }).status === 0, changed };
 }
+
+/** One recalled fact per bullet, which is what "how many memories" means here. */
+const bullets = (text: string): string[] => text.split(/\r?\n/).filter((l) => l.trimStart().startsWith('- '));
 
 async function runOnce(scenario: Scenario, arm: Arm, repeat: number): Promise<RunResult> {
   const runDir = join(OUT_DIR, scenario.name, arm, String(repeat));
   rmSync(runDir, { recursive: true, force: true });
   mkdirSync(runDir, { recursive: true });
-  const repoDir = join(runDir, 'repo');
-  const nmHome = join(runDir, 'nmhome');
+  // The model sees its own working directory in every shell command it writes.
+  // Under OUT_DIR that path spelled out the scenario name and the arm -- and
+  // "lost-writes" says where to look. The repository lives somewhere neutral;
+  // the run directory keeps only the outputs.
+  const workspace = realpathSync.native(mkdtempSync(join(tmpdir(), 'workspace-')));
+  const repoDir = join(workspace, 'app');
+  const nmHome = join(workspace, 'nmhome');
+  writeFileSync(join(runDir, 'workspace.txt'), workspace);
 
   scenario.build(repoDir);
   if (arm !== 'baseline') seedMemory(scenario, repoDir, nmHome);
@@ -342,6 +402,8 @@ async function runOnce(scenario: Scenario, arm: Arm, repeat: number): Promise<Ru
     commandPassesAfter: false,
     firstEditedFile: null,
     firstEditWasDeadEnd: false,
+    firstInvestigationAction: null,
+    finalChangedFiles: [],
     toolCallsBeforeFix: null,
     msToFix: null,
     toolCalls: 0,
@@ -352,6 +414,8 @@ async function runOnce(scenario: Scenario, arm: Arm, repeat: number): Promise<Ru
     injections: 0,
     injectedChars: 0,
     irrelevantInjections: 0,
+    recallItems: 0,
+    irrelevantRecallItems: 0,
     recallFired: false,
     digestFired: false,
     nexusMemToolCalls: 0,
@@ -361,6 +425,10 @@ async function runOnce(scenario: Scenario, arm: Arm, repeat: number): Promise<Ru
   if (arm === 'ambient') {
     run(process.execPath, [CLI, 'agent', 'install', '--project', '-C', repoDir], { env: { ...process.env, NEXUSMEM_HOME: nmHome } });
     const problem = preflightAmbient(scenario, repoDir, nmHome);
+    if (problem) return { ...empty, ok: false, systemFailure: problem };
+  }
+  if (arm === 'mcp') {
+    const problem = preflightMcp(repoDir, nmHome);
     if (problem) return { ...empty, ok: false, systemFailure: problem };
   }
 
@@ -385,8 +453,9 @@ async function runOnce(scenario: Scenario, arm: Arm, repeat: number): Promise<Ru
   const t = path ? readTranscript(path, repoDir) : EMPTY_TRANSCRIPT;
   if (path) writeFileSync(join(runDir, 'transcript.jsonl'), readFileSync(path)); // kept for the qualitative read
 
-  const { commandPasses } = scoreRepo(repoDir, scenario);
+  const { commandPasses, changed } = scoreRepo(repoDir, scenario);
   const injectedChars = t.injections.reduce((sum, i) => sum + i.length, 0);
+  const items = t.injections.flatMap(bullets);
 
   return {
     ...empty,
@@ -410,6 +479,10 @@ async function runOnce(scenario: Scenario, arm: Arm, repeat: number): Promise<Ru
     irrelevantInjections: t.injections.filter(
       (i) => UNRELATED_COMMANDS.some((c) => i.includes(c)) && !i.includes(scenario.command),
     ).length,
+    recallItems: items.length,
+    irrelevantRecallItems: items.filter((i) => UNRELATED_COMMANDS.some((c) => i.includes(c))).length,
+    firstInvestigationAction: t.firstAction,
+    finalChangedFiles: changed,
     recallFired: t.injections.some((i) => i.includes('failed in this repository before')),
     digestFired: t.injections.some((i) => i.includes('with no recorded fix')),
     nexusMemToolCalls: t.nexusMemToolCalls,
