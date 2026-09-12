@@ -88,6 +88,25 @@ describe.skipIf(shell === null)('the installed hook command, run by a real shell
     expect(events).toHaveLength(1);
   });
 
+  it('survives shell metacharacters in the script path', async () => {
+    // `$` and a backquote are legal in a filename on both Windows and POSIX,
+    // and a double-quoted path is not protection from either: an unescaped one
+    // installed a hook that the shell mangled into a path that does not exist.
+    const odd = join(home, 'pa$id', '`x`');
+    mkdirSync(odd, { recursive: true });
+    const oddHook = join(odd, 'agent-hook.js');
+    copyFileSync(HOOK, oddHook);
+
+    const { capture } = agentHookCommands(process.execPath, oddHook);
+    const log = join(home, 'odd.jsonl');
+    const result = runThroughShell(capture, log);
+
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    const { events } = await readAgentEvents(log, 0);
+    expect(events).toHaveLength(1);
+  });
+
   it('writes the payload nowhere in the command line: stdin is the only transport', () => {
     const { capture } = agentHookCommands(process.execPath, HOOK);
 

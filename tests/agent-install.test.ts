@@ -106,6 +106,21 @@ describe('hook command', () => {
     expect(commands.recall).toBe('"C:/Program Files/nodejs/node.exe" "D:/nm/dist/cli/index.js" agent recall --trigger failure');
     expect(commands.capture + commands.recall).not.toContain('\\');
   });
+
+  it('escapes what a shell would still read inside double quotes', () => {
+    // Reproduced on Linux: `$`, a backquote and a `"` in the install path each
+    // produced a command the shell mangled, so the hook silently never ran.
+    const { capture } = agentHookCommands('/usr/bin/node', '/home/u/pa$id/`x`/qu"ote/agent-hook.js');
+
+    expect(capture).toBe('"/usr/bin/node" "/home/u/pa\\$id/\\`x\\`/qu\\"ote/agent-hook.js"');
+  });
+
+  it('leaves a backslash in a POSIX path alone: there it names the file, it does not separate it', () => {
+    const { capture } = agentHookCommands('/usr/bin/node', '/home/u/back\\slash/agent-hook.js');
+
+    // Flattening it to `/` would point the hook at a directory that does not exist.
+    expect(capture).toBe('"/usr/bin/node" "/home/u/back\\\\slash/agent-hook.js"');
+  });
 });
 
 describe('nexusmem agent (CLI)', () => {
