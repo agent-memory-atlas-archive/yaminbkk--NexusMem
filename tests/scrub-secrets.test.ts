@@ -144,6 +144,23 @@ describe('scrubDatabase', () => {
     expect(backups()).toEqual([]);
   });
 
+  it('still purges on-disk remnants when re-embedding fails', async () => {
+    const failing = {
+      id: 'failing-provider',
+      dimensions: EMBEDDING_DIM,
+      embed: () => Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1:11434')),
+    };
+
+    const r = await scrubDatabase(dbPath, { apply: true, embeddingProvider: failing as never });
+
+    // The redaction is committed either way; skipping the purge would leave the
+    // pre-redaction text in the freelist and WAL.
+    expect(r.remnantsPurged).toBe(true);
+    expect(onDisk(dbPath, SECRET)).toBe(false);
+    expect(r.reembedded).toBe(0);
+    expect(r.embeddingsPending).toBe(r.embeddingsDropped);
+  });
+
   it('control: the seeded legacy database really holds the secret on disk', () => {
     expect(onDisk(dbPath, SECRET)).toBe(true);
   });

@@ -249,10 +249,18 @@ export async function scrubDatabase(dbPath: string, opts: ScrubOptions): Promise
         .prepare(`SELECT DISTINCT project_id AS p FROM nodes WHERE rowid IN (${changedRowids.map(() => '?').join(', ')})`)
         .all(...changedRowids) as Array<{ p: string }>;
       pending = 0;
-      for (const { p } of projects) {
-        const r = await embedPendingNodes(store, opts.embeddingProvider, p);
-        reembedded += r.embedded;
-        pending += r.remaining;
+      try {
+        for (const { p } of projects) {
+          const r = await embedPendingNodes(store, opts.embeddingProvider, p);
+          reembedded += r.embedded;
+          pending += r.remaining;
+        }
+      } catch {
+        // Re-embedding is best effort -- an unreachable Ollama is the normal case, and the
+        // next sync picks it up. What must not be skipped is the purge below: the redaction
+        // is already committed, and its pre-redaction text is still in the freelist and WAL
+        // until VACUUM and the checkpoint run.
+        pending = Math.max(dropped - reembedded, 0);
       }
     }
 
