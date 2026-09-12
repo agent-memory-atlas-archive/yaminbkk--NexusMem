@@ -92,11 +92,13 @@ describe('ambient injection stays silent when the evidence is weak', () => {
     expect(out.join('')).toBe('');
   });
 
-  it('KNOWN LIMITATION: an agent that hides the exit code gets no recall', async () => {
-    // `node check.js 2>&1 | head` and `cmd; echo $?` both exit 0, so Claude Code
-    // reports success and PostToolUseFailure never fires. Measured in the eval:
-    // recall fired in 1 of 3 runs for exactly this reason. Pinned so that a
-    // future change to this behaviour is a deliberate one.
+  it('KNOWN LIMITATION: a pipe/redirect that swallows the real exit code still gets no recall', async () => {
+    // `node check.js 2>&1 | head` exits 0 -- it's `head`'s own exit code, not
+    // the command's -- so Claude Code reports success and PostToolUseFailure
+    // never fires. Unlike the `cmd; echo "EXIT:$?"` form (see the sibling test
+    // below, addressed in the Phase-5.1 exit-status recovery), stdout here
+    // carries no recognisable status at all: there is nothing left to recover
+    // it from. Pinned so a future change to this remaining gap is deliberate.
     const out: string[] = [];
     await runAgentRecall({
       input: JSON.stringify({

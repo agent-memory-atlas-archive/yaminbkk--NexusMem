@@ -556,6 +556,47 @@ describe('nexusmem agent recall (CLI)', () => {
     expect(miss.join('')).toBe('');
   });
 
+  it('recovers recall when the agent hid the exit code behind "; echo EXIT:$?"', async () => {
+    // The other real Phase-5.1 finding: this specific wrapper form is
+    // recoverable from tool_response.stdout, even though the hook itself
+    // reports success (PostToolUse, not PostToolUseFailure).
+    await seedFailure('npm test');
+
+    const hit: string[] = [];
+    await runAgentRecall({
+      input: JSON.stringify({
+        session_id: `sess-${session}`,
+        cwd: dir,
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'npm test' },
+        tool_response: { stdout: 'AssertionError: expected 1 to be 2\nEXIT:1', stderr: '', interrupted: false },
+        tool_use_id: 'toolu_exitrecovered',
+      }),
+      out: (c) => hit.push(c),
+    });
+    expect(hit.join('')).toContain('failed in this repository before');
+  });
+
+  it('does not recover recall when the wrapped command genuinely succeeded ("EXIT:0")', async () => {
+    await seedFailure('npm test');
+
+    const miss: string[] = [];
+    await runAgentRecall({
+      input: JSON.stringify({
+        session_id: `sess-${session}`,
+        cwd: dir,
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'npm test' },
+        tool_response: { stdout: 'ok\nEXIT:0', stderr: '', interrupted: false },
+        tool_use_id: 'toolu_exitzero',
+      }),
+      out: (c) => miss.push(c),
+    });
+    expect(miss.join('')).toBe('');
+  });
+
   const sessionStartPayload = (over: Record<string, unknown> = {}) =>
     JSON.stringify({ session_id: 'sess-start', cwd: dir, hook_event_name: 'SessionStart', source: 'startup', ...over });
 

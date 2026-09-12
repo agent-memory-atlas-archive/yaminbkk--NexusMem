@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { agentEventNaturalKey, MAX_ERROR_SIGNATURE_CHARS } from '../src/agent/event.js';
-import { parseHookPayload, parseHookPayloadDetailed } from '../src/adapters/claude-code/payload.js';
+import { parseHookPayload, parseHookPayloadDetailed, recoverExitStatusFromOutput } from '../src/adapters/claude-code/payload.js';
 import { sha256Hex } from '../src/core/ids.js';
 
 /**
@@ -168,5 +168,100 @@ describe('parseHookPayload', () => {
     ['an edit with no path', JSON.stringify({ ...EDIT, tool_input: {} })],
   ])('drops %s', (_label, json) => {
     expect(parseHookPayload(json, NOW)).toBeNull();
+  });
+});
+
+/**
+ * Measured in the Phase-5 eval: 15 of 17 real Bash calls that were meant to
+ * be checking `node check.js` instead ran `node check.js; echo "EXIT:$?"` or
+ * piped it through `head` -- both exit 0 as far as Claude Code's hook is
+ * concerned, so `PostToolUseFailure` never fires and the payload carries no
+ * exit-code field at all. `tool_response.stdout` is the only place a real
+ * status can still be recovered from, and only in the closed set of literal
+ * echo spellings below.
+ */
+describe('recoverExitStatusFromOutput', () => {
+  it('direct success: ordinary output with no echo line yields no evidence', () => {
+    expect(recoverExitStatusFromOutput('probe-ok\n')).toBeNull();
+  });
+
+  it('"; echo EXIT:$?": recovers a non-zero status from the last line', () => {
+    expect(recoverExitStatusFromOutput('some output\nEXIT:1')).toBe(1);
+  });
+
+  it('"; echo EXIT:$?": recovers a zero status the same way', () => {
+    expect(recoverExitStatusFromOutput('ok\nEXIT:0')).toBe(0);
+  });
+
+  it('accepts the other observed spellings: "exit: N" and "exit=N", any case, trailing whitespace', () => {
+    expect(recoverExitStatusFromOutput('exit: 2')).toBe(2);
+    expect(recoverExitStatusFromOutput('EXIT: 3  ')).toBe(3);
+    expect(recoverExitStatusFromOutput('exit=4')).toBe(4);
+  });
+
+  it('pipeline: 2>&1 | head loses the real status; ordinary program output is not evidence', () => {
+    // The known, unaddressed gap: the outer pipeline's own exit code (head's)
+    // is what Claude Code's hook sees, and nothing in stdout says otherwise.
+    expect(recoverExitStatusFromOutput('AssertionError: expected 1 to be 2')).toBeNull();
+  });
+
+  it('malformed output: a line that looks like the echo but is not parseable yields no evidence', () => {
+    expect(recoverExitStatusFromOutput('EXIT:')).toBeNull();
+    expect(recoverExitStatusFromOutput('EXIT:abc')).toBeNull();
+  });
+
+  it('no status evidence: undefined or empty stdout yields no evidence', () => {
+    expect(recoverExitStatusFromOutput(undefined)).toBeNull();
+    expect(recoverExitStatusFromOutput('')).toBeNull();
+    expect(recoverExitStatusFromOutput('\n\n')).toBeNull();
+  });
+
+  it('false-positive text containing "exit code" is not mistaken for the echo', () => {
+    expect(recoverExitStatusFromOutput('Process finished with exit code 1')).toBeNull();
+    expect(recoverExitStatusFromOutput('build failed\nsee exit code 137 above')).toBeNull();
+  });
+
+  it('only the last non-blank line counts: an earlier coincidental match is not the wrapper', () => {
+    expect(recoverExitStatusFromOutput('exit:1\nthis is not the wrapper\n')).toBeNull();
+  });
+});
+
+describe('parseHookPayloadDetailed: exit-status recovery end to end', () => {
+  const success = (stdout: string, over: Record<string, unknown> = {}) =>
+    JSON.stringify({ ...SUCCEEDING_BASH, tool_response: { ...SUCCEEDING_BASH.tool_response, stdout }, ...over });
+
+  it('direct non-zero failure (real PostToolUseFailure) is unaffected: exit code still comes from the error text', () => {
+    const outcome = parseHookPayloadDetailed(JSON.stringify(FAILING_BASH), NOW);
+    expect(outcome).toMatchObject({ ok: true, event: { outcome: 'fail', exitCode: 2 } });
+  });
+
+  it('direct success is unaffected: no echo line, stays ok/0', () => {
+    const outcome = parseHookPayloadDetailed(success('probe-ok'), NOW);
+    expect(outcome).toMatchObject({ ok: true, event: { outcome: 'ok', exitCode: 0 } });
+  });
+
+  it('"; echo EXIT:$?" flips a hook-reported success into a recorded failure', () => {
+    const outcome = parseHookPayloadDetailed(success('some output\nEXIT:1'), NOW);
+    expect(outcome).toMatchObject({ ok: true, event: { outcome: 'fail', exitCode: 1 } });
+  });
+
+  it('"; echo EXIT:$?" with a zero status stays ok, with the recovered exit code', () => {
+    const outcome = parseHookPayloadDetailed(success('ok\nEXIT:0'), NOW);
+    expect(outcome).toMatchObject({ ok: true, event: { outcome: 'ok', exitCode: 0 } });
+  });
+
+  it('a real failure event is never overridden by anything found in stdout -- recovery only runs on the success path', () => {
+    // A PostToolUseFailure carries no tool_response at all in practice, but even
+    // if a future payload shape did, `failed` short-circuits recovery before it.
+    const outcome = parseHookPayloadDetailed(JSON.stringify({ ...FAILING_BASH, tool_response: { stdout: 'EXIT:0' } }), NOW);
+    expect(outcome).toMatchObject({ ok: true, event: { outcome: 'fail', exitCode: 2 } });
+  });
+
+  it('pipeline and malformed-output cases fall back to the hook: unknown stays "ok", never a guessed failure', () => {
+    expect(parseHookPayloadDetailed(success('AssertionError: expected 1 to be 2'), NOW)).toMatchObject({
+      ok: true,
+      event: { outcome: 'ok', exitCode: 0 },
+    });
+    expect(parseHookPayloadDetailed(success('EXIT:abc'), NOW)).toMatchObject({ ok: true, event: { outcome: 'ok', exitCode: 0 } });
   });
 });
