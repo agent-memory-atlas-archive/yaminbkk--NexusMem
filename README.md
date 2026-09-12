@@ -132,6 +132,15 @@ a hash of the raw command so two commands differing only by a secret are never c
 `nexusmem agent status` shows whether the hooks are installed; `nexusmem agent remove` takes out
 NexusMem's own entries and leaves any other tool's hooks alone.
 
+Install from the same environment Claude Code runs in. What gets written into the settings file is a
+literal command — an absolute path to a Node executable and an absolute path into this copy of
+NexusMem — and Claude Code hands that string to a shell in *its* environment. Install inside WSL
+while Claude Code is the Windows binary (or the reverse) and the hooks are configured, look
+installed, and capture nothing: the paths do not resolve on the side that runs them, and a hook that
+cannot start produces no error anywhere. `nexusmem agent status` names any path in the installed
+command that does not exist on the machine you ask from, which is also what it says after the
+NexusMem it points at is moved, upgraded to a different location, or uninstalled.
+
 ## Failure → fix chains (opt-in)
 
 ```bash

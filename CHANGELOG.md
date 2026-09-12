@@ -32,6 +32,10 @@ built from, matched by publish timestamp: `v0.1.0` → `67a4776`, `v0.1.1` → `
   - `nexusmem agent status` and `nexusmem agent remove` manage the hooks; `remove` takes only
     NexusMem's own entries. Installs into user settings by default, or `--project` for
     `.claude/settings.local.json`, never a settings file a team would commit.
+  - `nexusmem agent status` also lists any path in the installed command that does not exist on this
+    machine. Installing from one environment and running Claude Code in another (WSL vs. the Windows
+    binary) writes paths the executing shell cannot resolve, and the hook then captures nothing with
+    no error anywhere; the same line appears once the NexusMem it points at is moved or uninstalled.
 - Agent actions are ingested by every `sync`, and their arrival now runs failure→fix correlation
   without `--link-failures`.
 
