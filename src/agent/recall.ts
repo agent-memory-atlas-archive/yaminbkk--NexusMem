@@ -1,4 +1,4 @@
-import { RESOLVED_BY_RETRY } from '../correlate/failure-fix.js';
+import { RESOLVED_BY_DISCUSSION, RESOLVED_BY_RETRY } from '../correlate/failure-fix.js';
 import type { MemoryStore } from '../store/store.js';
 
 /**
@@ -118,10 +118,11 @@ export interface SessionDigest {
   /** Counts by state, for the eval and for `--json`. */
   resolved: number;
   stale: number;
+  uncertain: number;
   unresolved: number;
 }
 
-type CommandState = 'resolved' | 'stale' | 'unresolved';
+type CommandState = 'resolved' | 'stale' | 'uncertain' | 'unresolved';
 
 interface CommandSummary {
   command: string;
@@ -133,7 +134,7 @@ interface CommandSummary {
 }
 
 /** Resolved chains are shown first regardless of recency -- see the doc comment below. */
-const STATE_PRIORITY: Record<CommandState, number> = { resolved: 0, stale: 1, unresolved: 2 };
+const STATE_PRIORITY: Record<CommandState, number> = { resolved: 0, stale: 1, uncertain: 2, unresolved: 3 };
 
 /**
  * What is worth knowing when a session opens.
@@ -146,10 +147,15 @@ const STATE_PRIORITY: Record<CommandState, number> = { resolved: 0, stale: 1, un
  * failure with no known answer, even when the latter is more recent.
  *
  * Per command, only the MOST RECENT occurrence in the window decides the
- * state: if it has a recorded fix, the chain is 'resolved'; if it does not
- * but an OLDER occurrence of the exact same command did, that fix has since
- * stopped holding -- said as 'stale', not silently dropped and not repeated
- * as if it still applied; otherwise it is plain 'unresolved'.
+ * state: if it has a `resolved_by:retry` link, the chain is 'resolved' -- the
+ * one heuristic dogfooding found correct on every manually-checked link (see
+ * correlate/failure-fix.ts). If it does not but an OLDER occurrence of the
+ * exact same command did, that fix has since stopped holding -- said as
+ * 'stale', not silently dropped and not repeated as if it still applied. If
+ * the newest occurrence instead has only a `resolved_by:discussion` link --
+ * the other heuristic, measured roughly half wrong when dogfooded -- it is
+ * 'uncertain': named, but never worded as "fixed", because that evidence does
+ * not support the word. Otherwise it is plain 'unresolved'.
  *
  * Returns null only when there is truly nothing in the window -- a
  * repository whose only history is fully resolved chains now gets a digest,
@@ -184,6 +190,14 @@ export function recallSessionStart(store: MemoryStore, projectId: string, now = 
     if (staleFixId) {
       const fix = store.raw.prepare(SELECT_BY_ID).get(staleFixId) as NodeRow | undefined;
       summaries.push({ command, newestTs: newest!.ts, state: 'stale', fixTs: fix?.ts });
+      continue;
+    }
+    // Weaker evidence than a retry link, and never described as a fix -- see
+    // the doc comment above. Only checked once retry evidence is exhausted.
+    const [discussionId] = store.getLinkedNodeIds(newest!.id, RESOLVED_BY_DISCUSSION);
+    if (discussionId) {
+      const discussion = store.raw.prepare(SELECT_BY_ID).get(discussionId) as NodeRow | undefined;
+      summaries.push({ command, newestTs: newest!.ts, state: 'uncertain', fixTs: discussion?.ts });
     } else {
       summaries.push({ command, newestTs: newest!.ts, state: 'unresolved' });
     }
@@ -197,11 +211,14 @@ export function recallSessionStart(store: MemoryStore, projectId: string, now = 
     if (s.state === 'stale') {
       return `- ${s.command} (fixed ${day(s.fixTs!)}, but failed again ${day(s.newestTs)} -- that fix no longer holds)`;
     }
+    if (s.state === 'uncertain') {
+      return `- ${s.command} failed ${day(s.newestTs)} -- possibly discussed around ${day(s.fixTs!)}, not confirmed as a fix`;
+    }
     return `- ${s.command} failed ${day(s.newestTs)} with no recorded fix`;
   });
   const more = summaries.length > listed.length ? ` and ${summaries.length - listed.length} other(s)` : '';
 
-  const counts = { resolved: 0, stale: 0, unresolved: 0 };
+  const counts = { resolved: 0, stale: 0, uncertain: 0, unresolved: 0 };
   for (const s of summaries) counts[s.state] += 1;
 
   return {

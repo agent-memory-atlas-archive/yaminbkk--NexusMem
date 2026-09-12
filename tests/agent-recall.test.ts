@@ -6,7 +6,7 @@ import { type AgentEvent, redactAgentEvent } from '../src/agent/event.js';
 import { MAX_DIGEST_CHARS, MAX_RECALL_CHARS, recallFailure, recallSessionStart } from '../src/agent/recall.js';
 import { markInjected, MAX_INJECTIONS_PER_SESSION, shouldInject } from '../src/agent/recall-state.js';
 import { collectAgentEvents } from '../src/collectors/agent-events.js';
-import { correlateFailures } from '../src/correlate/failure-fix.js';
+import { correlateFailures, RESOLVED_BY_DISCUSSION } from '../src/correlate/failure-fix.js';
 import { sha256Hex } from '../src/core/ids.js';
 import { MemoryStore } from '../src/store/store.js';
 
@@ -225,6 +225,60 @@ describe('recallSessionStart', () => {
     correlateFailures(store, PROJECT);
     const farFuture = new Date(NOW.getTime() + 40 * 86_400_000);
     expect(recallSessionStart(store, PROJECT, farFuture)).toBeNull();
+  });
+
+  it('an uncertain relationship (discussion-linked, not retry-linked) is named but never described as fixed', () => {
+    // The discussion heuristic measures roughly half wrong when dogfooded
+    // (see correlate/failure-fix.ts) -- linked deterministically here rather
+    // than through that heuristic, so the test is about the digest's own
+    // wording, not about whether the heuristic itself fires.
+    const [failNode] = collectAgentEvents([event({ command: 'npm test', ts: at(0) })], PROJECT, { repoRoot: ROOT });
+    const [otherNode] = collectAgentEvents([event({ command: 'git log', outcome: 'ok', exitCode: 0, ts: at(5) })], PROJECT, {
+      repoRoot: ROOT,
+    });
+    store.upsertNodes([failNode!, otherNode!]);
+    store.linkNodes(failNode!.id, otherNode!.id, RESOLVED_BY_DISCUSSION);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.uncertain).toBe(1);
+    expect(digest.resolved).toBe(0);
+    expect(digest.text).toContain('npm test');
+    expect(digest.text).toContain('not confirmed');
+    // The word this state must never earn on its own.
+    expect(digest.text).not.toMatch(/\bfixed\b/);
+  });
+
+  it('never lists the same command twice, even across two separate fail/fix cycles in the window', () => {
+    const command = 'npm test';
+    store.upsertNodes(collectAgentEvents([event({ command, ts: at(0) })], PROJECT, { repoRoot: ROOT }));
+    store.upsertNodes(
+      collectAgentEvents(
+        [
+          event({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(1) }),
+          event({ command, outcome: 'ok', exitCode: 0, ts: at(2) }),
+        ],
+        PROJECT,
+        { repoRoot: ROOT },
+      ),
+    );
+    correlateFailures(store, PROJECT);
+    // A second, later fail/fix cycle of the exact same command, still inside the window.
+    store.upsertNodes(collectAgentEvents([event({ command, ts: at(10) })], PROJECT, { repoRoot: ROOT }));
+    store.upsertNodes(
+      collectAgentEvents(
+        [
+          event({ kind: 'edit', filePath: `${ROOT}/src/d.ts`, outcome: 'ok', exitCode: null, ts: at(11) }),
+          event({ command, outcome: 'ok', exitCode: 0, ts: at(12) }),
+        ],
+        PROJECT,
+        { repoRoot: ROOT },
+      ),
+    );
+    correlateFailures(store, PROJECT);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.resolved).toBe(1);
+    expect(digest.text.match(/npm test/g)).toHaveLength(1);
   });
 
   it('lists commands that failed with no fix, one line each', () => {
