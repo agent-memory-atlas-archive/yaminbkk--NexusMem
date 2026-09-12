@@ -145,6 +145,32 @@ describe('nexusmem agent (CLI)', () => {
     expect(out.join('')).toContain('refused');
   });
 
+  it('reinstalls into the `{}` its own remove leaves behind', async () => {
+    // Found on a real Windows lifecycle run: remove drops the `hooks` key it
+    // added, leaving a valid but empty file, and install then refused it as
+    // unparsable -- so install/remove/install could only be done once.
+    await runAgentInstall({ cwd: dir, scope: 'project', out: () => {} });
+    await runAgentRemove({ cwd: dir, scope: 'project', out: () => {} });
+    const path = join(dir, '.claude', 'settings.local.json');
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({});
+
+    const out: string[] = [];
+    expect(await runAgentInstall({ cwd: dir, scope: 'project', out: (c) => out.push(c) })).toBe(0);
+    expect(stripAnsi(out.join(''))).toContain('installed');
+    expect(JSON.parse(readFileSync(path, 'utf8')).hooks.PostToolUseFailure).toHaveLength(2);
+  });
+
+  it('still refuses a settings file that is JSON but not an object', async () => {
+    mkdirSync(join(dir, '.claude'), { recursive: true });
+    const path = join(dir, '.claude', 'settings.local.json');
+    writeFileSync(path, '["not", "a", "settings", "object"]');
+
+    const out: string[] = [];
+    expect(await runAgentInstall({ cwd: dir, scope: 'project', out: (c) => out.push(c) })).toBe(1);
+    expect(readFileSync(path, 'utf8')).toBe('["not", "a", "settings", "object"]');
+    expect(stripAnsi(out.join(''))).toContain('refused');
+  });
+
   it('round-trips install, status and remove', async () => {
     await runAgentInstall({ cwd: dir, scope: 'project', out: () => {} });
 

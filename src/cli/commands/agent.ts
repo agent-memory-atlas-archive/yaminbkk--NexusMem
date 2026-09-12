@@ -43,14 +43,21 @@ export function settingsPathFor(scope: AgentSettingsScope, cwd: string): string 
   return scope === 'project' ? join(cwd, '.claude', 'settings.local.json') : join(homedir(), '.claude', 'settings.json');
 }
 
-async function readSettings(path: string): Promise<ClaudeSettings> {
+/** `null` means a file is there and rewriting it would destroy something; an absent file reads as empty. */
+async function readSettings(path: string): Promise<ClaudeSettings | null> {
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch {
+    return existsSync(path) ? null : {};
+  }
   try {
     // A settings file a Windows editor saved carries a BOM; refusing to touch
     // it would strand the user with an install that cannot proceed.
-    const parsed: unknown = JSON.parse(stripBom(await readFile(path, 'utf8')));
-    return typeof parsed === 'object' && parsed !== null ? (parsed as ClaudeSettings) : {};
+    const parsed: unknown = JSON.parse(stripBom(raw));
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as ClaudeSettings) : null;
   } catch {
-    return {};
+    return null;
   }
 }
 
@@ -63,10 +70,12 @@ export async function runAgentInstall(opts: AgentCommandOptions): Promise<number
   const out = opts.out ?? ((chunk: string) => void process.stdout.write(chunk));
   const scope = opts.scope ?? 'user';
   const path = settingsPathFor(scope, opts.cwd);
-  const existing = existsSync(path);
 
+  // `{}` is a settings file, not a broken one -- and it is exactly what
+  // `agent remove` leaves behind, so reading "no keys" as unparsable made
+  // every reinstall after a remove refuse.
   const settings = await readSettings(path);
-  if (existing && Object.keys(settings).length === 0) {
+  if (settings === null) {
     out(`${pc.red('refused')} ${path} exists but could not be parsed as JSON -- fix or move it first\n`);
     return 1;
   }
@@ -87,7 +96,7 @@ export async function runAgentInstall(opts: AgentCommandOptions): Promise<number
 export async function runAgentRemove(opts: AgentCommandOptions): Promise<number> {
   const out = opts.out ?? ((chunk: string) => void process.stdout.write(chunk));
   const path = settingsPathFor(opts.scope ?? 'user', opts.cwd);
-  const { settings, removed } = removeAgentHooks(await readSettings(path));
+  const { settings, removed } = removeAgentHooks((await readSettings(path)) ?? {});
 
   if (removed === 0) {
     out(`${pc.dim('nothing to remove')} no NexusMem agent hooks in ${path}\n`);
@@ -102,7 +111,7 @@ export async function runAgentStatus(opts: AgentCommandOptions): Promise<number>
   const out = opts.out ?? ((chunk: string) => void process.stdout.write(chunk));
   const scope = opts.scope ?? 'user';
   const path = settingsPathFor(scope, opts.cwd);
-  const status = agentHookStatus(await readSettings(path), agentHookCommands());
+  const status = agentHookStatus((await readSettings(path)) ?? {}, agentHookCommands());
 
   // Configuration and evidence are different questions: hooks can be installed
   // and recording nothing, which is the failure this reports.
