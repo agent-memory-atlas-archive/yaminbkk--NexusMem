@@ -27,6 +27,11 @@ import { sha256Hex } from '../src/core/ids.js';
 import { MemoryStore } from '../src/store/store.js';
 import { gitFixture } from './helpers.js';
 
+// Colour is on wherever NO_COLOR is not set, e.g. CI: assertions that span
+// a label and its value have to see the text, not the escape codes.
+// eslint-disable-next-line no-control-regex
+const stripAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, '');
+
 const COMMANDS: AgentHookCommands = {
   capture: 'node /nm/dist/cli/agent-hook.js',
   recall: 'node /nm/dist/cli/index.js agent recall --trigger failure',
@@ -145,15 +150,15 @@ describe('nexusmem agent (CLI)', () => {
 
     const installed: string[] = [];
     await runAgentStatus({ cwd: dir, scope: 'project', out: (c) => installed.push(c) });
-    expect(installed.join('')).toMatch(/installed\s+yes/);
+    expect(stripAnsi(installed.join(''))).toMatch(/installed\s+yes/);
 
     const removed: string[] = [];
     await runAgentRemove({ cwd: dir, scope: 'project', out: (c) => removed.push(c) });
-    expect(removed.join('')).toContain('removed 4');
+    expect(stripAnsi(removed.join(''))).toContain('removed 4');
 
     const after: string[] = [];
     await runAgentStatus({ cwd: dir, scope: 'project', out: (c) => after.push(c) });
-    expect(after.join('')).toMatch(/installed\s+no/);
+    expect(stripAnsi(after.join(''))).toMatch(/installed\s+no/);
   });
 
   describe('status reports capture evidence, not just configuration', () => {
@@ -166,7 +171,7 @@ describe('nexusmem agent (CLI)', () => {
     const status = async () => {
       const out: string[] = [];
       await runAgentStatus({ cwd: dir, scope: 'project', out: (c) => out.push(c) });
-      return out.join('');
+      return stripAnsi(out.join(''));
     };
 
     const writeEvent = (minutesAgo: number) => {
