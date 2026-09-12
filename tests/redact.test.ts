@@ -196,6 +196,59 @@ describe('redact: idempotence and profiles', () => {
   });
 });
 
+/**
+ * Three ways a secret used to survive redaction, all reported in review of the
+ * v0.10.5 branch and all reproduced against that code before being fixed here:
+ * a quoted value ending early at an escaped quote, an option-borne bearer token
+ * with no digit in it, and a quoted curl credential containing a space.
+ */
+describe('redact: values that used to end the match early', () => {
+  const BS = String.fromCharCode(92);
+
+  it.each([
+    ['double quotes', `export API_PASSWORD="pa${BS}"ss-TAIL"`],
+    ['single quotes', `--password 'pa${BS}'ss-TAIL'`],
+    ['backticks', `--password ${String.fromCharCode(96)}pa${BS}${String.fromCharCode(96)}ss-TAIL${String.fromCharCode(96)}`],
+  ])('redacts through an escaped quote inside a %s value', (_label, input) => {
+    const { text } = redact(input);
+
+    expect(text).not.toContain('TAIL');
+    expect(text).toContain('[redacted]');
+  });
+
+  it.each([
+    ['alphabetic token', 'curl --oauth2-bearer abcdefghijklmnopqrstuvwx https://api.example.com', 'abcdefghijklmnopqrstuvwx'],
+    ['short token', 'curl --oauth-bearer shortie https://api.example.com', 'shortie'],
+    ['digit-bearing token', 'curl --oauth2-bearer abcdefghijklmnop1234 https://api.example.com', 'abcdefghijklmnop1234'],
+  ])('redacts a bearer option argument regardless of its shape: %s', (_label, input, secret) => {
+    const { text } = redact(input);
+
+    expect(text).not.toContain(secret);
+    expect(text).toContain('--oauth');
+  });
+
+  it.each([
+    ['double-quoted', 'curl -u "alice:pass word-TAIL" https://api.example.com'],
+    ['single-quoted', "curl -u 'alice:pass word-TAIL' https://api.example.com"],
+    ['--user long form', 'curl --user "alice:pass word-TAIL" https://api.example.com'],
+  ])('redacts a whole %s curl credential, spaces included', (_label, input) => {
+    const { text } = redact(input);
+
+    expect(text).not.toContain('TAIL');
+    expect(text).not.toContain('pass word');
+    // The user name is context, not a credential, and stays readable.
+    expect(text).toContain('alice:');
+  });
+
+  it('still redacts the unquoted curl form, and leaves an ordinary curl alone', () => {
+    expect(redact('curl -u alice:passwordvalue https://api.example.com').text).not.toContain('passwordvalue');
+    expect(redact('curl -X POST https://api.example.com/v1/items')).toEqual({
+      text: 'curl -X POST https://api.example.com/v1/items',
+      redactedCount: 0,
+    });
+  });
+});
+
 describe('redact key-value-secret: prose and code stay untouched', () => {
   it.each([
     'we chose BM25 because developer queries are keyword-heavy',

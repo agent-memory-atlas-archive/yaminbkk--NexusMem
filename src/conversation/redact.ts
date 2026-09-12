@@ -39,12 +39,17 @@ const SECRET_KEYWORD = String.raw`(?:(?:pass(?:word|wd|phrase)|secret|credential
 const SECRET_KEY = String.raw`(?:[A-Za-z0-9_.-]{0,100}?${SECRET_KEYWORD}|(?:-{1,2}|(?:[A-Za-z0-9]{1,40}[_.-]){1,8})pass)(?:[_.-][A-Za-z0-9]{1,40}){0,8}`;
 // Type annotations (`password: string`) are not values; everything else is hidden, however short.
 const TYPE_WORD = String.raw`(?:string|number|boolean|bool|int|str|null|undefined|none|nil|true|false|any|unknown|object)(?=[\s;,)|\]}>]|$)`;
-const SECRET_VALUE = String.raw`(?:"[^"\r\n]+"|'[^'\r\n]+'|\x60[^\x60\r\n]+\x60|[^\s'"\x60]+)`;
+// A quoted value runs to its *closing* quote: an escaped quote inside it (--password "pa\"ss")
+// must not end the match, or the tail after it survives redaction. Bounded so a runaway quote
+// cannot walk the whole line.
+const SECRET_VALUE = String.raw`(?:"(?:\\.|[^"\\\r\n]){1,500}"|'(?:\\.|[^'\\\r\n]){1,500}'|\x60(?:\\.|[^\x60\\\r\n]){1,500}\x60|[^\s'"\x60]+)`;
 // The rest of one shell command: stops at a pipe, `;`, `&` or newline so a tool name never reaches into the next command.
 const SAME_COMMAND = String.raw`[^\n|;&]{0,500}?`;
 // A next argument that is a flag or a redirection is not a value.
 const NOT_FLAG_OR_REDIRECT = String.raw`(?![-<>|&;])`;
 const AUTH_SCHEME = String.raw`(?:bearer|basic|token|digest|negotiate|ntlm)`;
+/** Everything up to and including curl's credential flag, shared by that rule's quoted and bare branches. */
+const CURL_USER = String.raw`\bcurl(?=[ \t])${SAME_COMMAND}[ \t](?:-u|--user)(?:[ \t]+|=)?`;
 
 const RULES: Rule[] = [
   {
@@ -70,7 +75,19 @@ const RULES: Rule[] = [
     highConfidence: true,
     render: keepPrefix,
   },
-  // A bearer token outside a header (`--oauth2-bearer x`); it must contain a digit so "bearer authentication" is left alone.
+  // An option whose name ends in `bearer` (`--oauth2-bearer x`) always takes a credential, whatever
+  // the token looks like. The prose-shaped rule below cannot cover it: it needs a digit, so an
+  // all-alphabetic token would survive.
+  {
+    name: 'bearer-option-arg',
+    pattern: new RegExp(
+      String.raw`(?<=^|[\s'"(])(-{1,2}[A-Za-z0-9_.-]{0,40}bearer[ \t]+)${NOT_FLAG_OR_REDIRECT}${NOT_MARK}${SECRET_VALUE}`,
+      'gi',
+    ),
+    highConfidence: true,
+    render: keepPrefix,
+  },
+  // A bearer token outside a header (`Bearer x`); it must contain a digit so "bearer authentication" is left alone.
   {
     name: 'bearer-token',
     pattern: new RegExp(String.raw`(\bbearer[ \t]+)${NOT_MARK}(?=[A-Za-z0-9._~+/-]*\d)[A-Za-z0-9._~+/-]{16,}=*`, 'gi'),
@@ -113,14 +130,16 @@ const RULES: Rule[] = [
     highConfidence: true,
     render: keepPrefix,
   },
+  // Quoted credentials get their own branches: `curl -u "user:pass word"` holds a space, which
+  // the unquoted branch would stop at, leaving the rest of the password in the text.
   {
     name: 'curl-user-password',
     pattern: new RegExp(
-      String.raw`(\bcurl(?=[ \t])${SAME_COMMAND}[ \t](?:-u|--user)(?:[ \t]+|=)?["']?[^\s:'"]*:)${NOT_MARK}[^\s'"]+`,
+      String.raw`(${CURL_USER}"[^\s:"]*:)${NOT_MARK}[^"\r\n]*|(${CURL_USER}'[^\s:']*:)${NOT_MARK}[^'\r\n]*|(${CURL_USER}[^\s:'"]*:)${NOT_MARK}[^\s'"]+`,
       'g',
     ),
     highConfidence: true,
-    render: keepPrefix,
+    render: (groups) => `${groups.find((g) => g.length > 0) ?? ''}${MARK}`,
   },
   // Authorization: Bearer x / Basic x / token x. The scheme word is kept; it must not be mistaken for the value.
   {
