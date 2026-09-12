@@ -280,7 +280,13 @@ describe('nexusmem forget', () => {
 
       const store = MemoryStore.open(ws.dbPath);
       try {
-        expect(store.search(projectId, secret, 10)).toEqual([]); // discriminating: a broken deny-list would let this come back
+        // FTS5 splits the query on punctuation, so a node sharing one word with
+        // the value is a hit without carrying it. On macOS every fixture path is
+        // under /private/var/folders/..., which matches the "private" in the
+        // value -- the first macOS CI run failed here on the control node, not
+        // on a resurrected secret. What must be gone is the value itself.
+        const hits = store.search(projectId, secret, 10);
+        expect(hits.filter((n) => `${n.title}\n${n.body}`.includes(secret))).toEqual([]); // discriminating: a broken deny-list would let this come back
         expect(store.search(projectId, 'control-command-should-survive', 10).length).toBeGreaterThan(0); // proves it's the deny-list, not a broken rebuild
 
         const denyCount = (store.raw.prepare('SELECT COUNT(*) AS c FROM deny_list WHERE project_id = ?').get(projectId) as { c: number })
