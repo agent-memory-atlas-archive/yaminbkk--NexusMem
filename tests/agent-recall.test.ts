@@ -122,6 +122,19 @@ describe('recallFailure', () => {
     expect(recallFailure(store, PROJECT, HASH(a))).not.toBeNull();
     expect(recallFailure(store, PROJECT, HASH(b))).toBeNull();
   });
+
+  it('backward compatibility: a node written before execHash existed is simply never found by it', () => {
+    // Simulates a row from before this field existed: meta has commandHash
+    // but no execHash. json_extract on a missing path is SQL NULL, so this
+    // must fail closed -- no match, no crash -- rather than throw or match
+    // on some coerced value of "missing".
+    const [node] = collectAgentEvents([event({ command: 'npm test' })], PROJECT, { repoRoot: ROOT });
+    store.upsertNodes([node!]); // upsertNodes always writes execHash today
+    store.raw.prepare(`UPDATE nodes SET meta = json_remove(meta, '$.execHash') WHERE id = ?`).run(node!.id);
+
+    expect(() => recallFailure(store, PROJECT, HASH('npm test'))).not.toThrow();
+    expect(recallFailure(store, PROJECT, HASH('npm test'))).toBeNull();
+  });
 });
 
 describe('recallSessionStart', () => {
