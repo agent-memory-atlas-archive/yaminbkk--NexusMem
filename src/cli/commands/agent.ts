@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import pc from 'picocolors';
 import { readCaptureStatus } from '../../agent/capture-health.js';
 import { stripBom } from '../../core/text.js';
-import { agentHookCommands, hookCommandPaths } from '../../agent/hook-command.js';
+import { type AgentHookCommands, agentHookCommands, hookCommandPaths } from '../../agent/hook-command.js';
 import { recallFailure, recallSessionStart } from '../../agent/recall.js';
 import { markInjected, shouldInject } from '../../agent/recall-state.js';
 import {
@@ -35,6 +35,8 @@ export interface AgentCommandOptions {
   cwd: string;
   scope?: AgentSettingsScope;
   out?: (chunk: string) => void;
+  /** Overridable so a test can install from a path this machine does not have, e.g. npx's cache. */
+  commands?: AgentHookCommands;
 }
 
 export function settingsPathFor(scope: AgentSettingsScope, cwd: string): string {
@@ -80,17 +82,33 @@ export async function runAgentInstall(opts: AgentCommandOptions): Promise<number
     return 1;
   }
 
-  await writeSettings(path, upsertAgentHooks(settings, agentHookCommands()));
+  const commands = opts.commands ?? agentHookCommands();
+  await writeSettings(path, upsertAgentHooks(settings, commands));
   out(
     [
       `${pc.green('installed')} NexusMem agent hooks in ${path}`,
       `  ${pc.dim('captures')} commands and edits Claude Code makes, redacted, into this machine's agent log`,
       `  ${pc.dim('recalls')}  past failures of the same command, at the moment one fails again`,
       `  ${pc.dim('restart Claude Code for the hooks to take effect')}`,
+      // The README leads with `npx nexusmem`, and an install run that way
+      // writes the cache directory into the hook command. It works until npm
+      // clears the cache, after which the hook captures nothing and says
+      // nothing. Verified by clearing it.
+      ...(isNpxCacheInstall(commands.capture)
+        ? [
+            `  ${pc.yellow('warning')}  this copy of NexusMem is npx's temporary cache, and the hooks now point into it`,
+            `  ${pc.dim('         ')} they stop working when npm clears that cache -- install NexusMem first (npm i -g nexusmem), then run this again`,
+          ]
+        : []),
       '',
     ].join('\n'),
   );
   return 0;
+}
+
+/** npm's own name for the directory `npx` unpacks a package into, on every platform. */
+function isNpxCacheInstall(command: string): boolean {
+  return hookCommandPaths(command).some((p) => /[\\/]_npx[\\/]/.test(p));
 }
 
 export async function runAgentRemove(opts: AgentCommandOptions): Promise<number> {
@@ -111,7 +129,7 @@ export async function runAgentStatus(opts: AgentCommandOptions): Promise<number>
   const out = opts.out ?? ((chunk: string) => void process.stdout.write(chunk));
   const scope = opts.scope ?? 'user';
   const path = settingsPathFor(scope, opts.cwd);
-  const status = agentHookStatus((await readSettings(path)) ?? {}, agentHookCommands());
+  const status = agentHookStatus((await readSettings(path)) ?? {}, opts.commands ?? agentHookCommands());
 
   // An installed command is a literal string Claude Code hands to a shell in
   // its own environment. Installing from a different one -- WSL, a container,

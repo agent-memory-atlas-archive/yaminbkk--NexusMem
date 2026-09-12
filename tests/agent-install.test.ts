@@ -203,6 +203,29 @@ describe('nexusmem agent (CLI)', () => {
     expect(stripAnsi(out.join(''))).toContain('refused');
   });
 
+  it("warns when the hooks would point into npx's cache, which npm deletes", async () => {
+    // `npx nexusmem` is the install path the README leads with. Verified on
+    // Linux: the hooks work, then `npm cache clean --force` removes what they
+    // point at and capture stops with nothing said anywhere.
+    const npx = '/home/u/.npm/_npx/6442f42d5628d82d/node_modules/nexusmem/dist/cli';
+    const cached = agentHookCommands('/usr/bin/node', `${npx}/agent-hook.js`, `${npx}/index.js`);
+
+    const out: string[] = [];
+    expect(await runAgentInstall({ cwd: dir, scope: 'project', commands: cached, out: (c) => out.push(c) })).toBe(0);
+
+    const text = stripAnsi(out.join(''));
+    expect(text).toContain('installed');
+    expect(text).toContain("npx's temporary cache");
+    expect(text).toContain('npm i -g nexusmem');
+  });
+
+  it('says nothing about npx for an install from a normal location', async () => {
+    const out: string[] = [];
+    await runAgentInstall({ cwd: dir, scope: 'project', out: (c) => out.push(c) });
+
+    expect(stripAnsi(out.join(''))).not.toContain('npx');
+  });
+
   it('round-trips install, status and remove', async () => {
     await runAgentInstall({ cwd: dir, scope: 'project', out: () => {} });
 
