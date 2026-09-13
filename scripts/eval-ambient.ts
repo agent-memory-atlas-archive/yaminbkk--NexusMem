@@ -381,6 +381,36 @@ function transcriptPath(sessionId: string): string | null {
   return null;
 }
 
+/**
+ * A hook's output does not arrive as one consistent shape. `SessionStart`
+ * prints plain text (`runAgentSessionStart`'s own doc comment: "not JSON --
+ * that is the injection form the live probe verified for SessionStart"), and
+ * Claude Code records that directly in the attachment's `content` field.
+ * `PostToolUse`/`PostToolUseFailure` recall instead prints a JSON envelope
+ * (`{"hookSpecificOutput":{"additionalContext":"..."}}`) -- and Claude Code
+ * leaves `content` EMPTY for that shape, putting the raw stdout in `stdout`
+ * instead. Found live, after the first analysis of this rerun's own data
+ * reported recall firing 0/9: it had fired in 2/9, invisible only because
+ * this function checked `content` alone. `verify-preflight.ts` never had
+ * this bug -- it reads `agent recall`'s own CLI stdout directly, never a
+ * Claude Code transcript.
+ */
+function extractHookInjection(hook: { type?: string; content?: unknown; stdout?: unknown }): string | null {
+  if (!hook.type?.startsWith('hook')) return null;
+  if (typeof hook.content === 'string' && hook.content.includes('NexusMem:')) return hook.content;
+  if (typeof hook.stdout === 'string') {
+    try {
+      const parsed = JSON.parse(hook.stdout) as { hookSpecificOutput?: { additionalContext?: unknown } };
+      const ctx = parsed.hookSpecificOutput?.additionalContext;
+      if (typeof ctx === 'string' && ctx.includes('NexusMem:')) return ctx;
+    } catch {
+      // stdout wasn't JSON -- SessionStart's plain-text form is already
+      // handled by the `content` check above, so this genuinely has nothing.
+    }
+  }
+  return null;
+}
+
 /** Reads the session transcript for what the model actually did and was shown. */
 function readTranscript(path: string, repoDir: string): Transcript {
   const t: Transcript = { ...EMPTY_TRANSCRIPT, editedFiles: [], editIndex: new Map(), editMs: new Map(), injections: [] };
@@ -393,7 +423,7 @@ function readTranscript(path: string, repoDir: string): Transcript {
       type?: string;
       timestamp?: string;
       message?: { role?: string; content?: unknown };
-      attachment?: { type?: string; hookName?: string; content?: unknown };
+      attachment?: { type?: string; hookName?: string; content?: unknown; stdout?: unknown };
     };
     try {
       entry = JSON.parse(line);
@@ -403,12 +433,9 @@ function readTranscript(path: string, repoDir: string): Transcript {
     const at = entry.timestamp ? Date.parse(entry.timestamp) : null;
     if (at !== null && startedAt === null) startedAt = at;
 
-    // A hook's output does not arrive as a message block: Claude Code records
-    // it as an attachment carrying the hook's name and its stdout. Reading
-    // only message content misses every injection there is.
-    const hook = entry.attachment;
-    if (hook?.type?.startsWith('hook') && typeof hook.content === 'string' && hook.content.includes('NexusMem:')) {
-      t.injections.push(hook.content);
+    if (entry.attachment) {
+      const text = extractHookInjection(entry.attachment);
+      if (text) t.injections.push(text);
     }
 
     const content = entry.message?.content;
