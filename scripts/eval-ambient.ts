@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { redactAgentEvent } from '../src/agent/event.js';
+import { MAX_DIGEST_CHARS, MAX_RECALL_CHARS } from '../src/agent/recall.js';
 import { SCENARIOS, type Scenario } from '../eval/ambient/scenario.js';
 
 /**
@@ -94,13 +95,25 @@ interface RunResult {
   irrelevantRecallItems: number;
   /** Did the failure recall -- the feature the tester said they would miss -- actually fire? */
   recallFired: boolean;
-  /** Did the session-start digest fire? */
+  /** How many separate times a real failure during the run triggered recall. */
+  recallFiredCount: number;
+  /** Among firing recalls, did the text actually name the seeded A/B/C evidence? */
+  recallContainedABC: boolean;
+  /** Did the session-start digest fire, in any composition (resolved/stale/uncertain/unresolved)? */
   digestFired: boolean;
+  /** Did the digest's own resolved/stale wording ("fixed ...") appear? */
+  digestContainedResolvedChain: boolean;
+  /** Did the digest explicitly flag a fix that stopped holding ("no longer holds")? */
+  digestContainedStaleWarning: boolean;
+  /** Did an unrelated unresolved command rank ahead of the scenario's own chain in the digest? */
+  digestDisplaced: boolean;
   nexusMemToolCalls: number;
   noticedNexusMem: boolean;
 }
 
-function run(cmd: string, args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): string {
+function run(cmd: string, args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string } = {}): string {
+  // `input` overrides stdio[0] itself (Node's own documented behaviour), so
+  // the 'ignore' default below only ever applies when there is none to send.
   return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
 }
 
@@ -125,8 +138,39 @@ function seedMemory(scenario: Scenario, repoDir: string, nmHome: string): void {
 }
 
 /**
- * §6: separate a system failure from model behaviour. If capture, correlation
- * or recall is broken, an ambient run measures nothing about the product.
+ * Every probe below needs its own `session_id`: `agent recall` explains the
+ * same failure only once per session (`shouldInject`/`markInjected`) -- real
+ * product behaviour, but reusing an id across two probes here would silently
+ * suppress the second and read as a broken match when nothing is broken.
+ */
+let preflightSessionId = 0;
+const preflightSession = () => `preflight-${(preflightSessionId += 1)}`;
+
+function recallOf(repoDir: string, env: NodeJS.ProcessEnv, payload: object): string {
+  return (
+    spawnSync(process.execPath, [CLI, 'agent', 'recall', '--trigger', 'failure'], {
+      cwd: repoDir,
+      env,
+      input: JSON.stringify(payload),
+      encoding: 'utf8',
+    }).stdout ?? ''
+  );
+}
+
+/**
+ * Deterministic gate run before every single AMBIENT trial, not just once for
+ * the batch: capture, correlation and recall have to actually work on THIS
+ * trial's own freshly-seeded fixture, or the trial measures a broken system
+ * rather than the model. Covers every item the eval plan requires:
+ *   - capture health is not degraded
+ *   - the A/B/C chain exists and is reachable
+ *   - a live `cd "<cwd>" && <command>` failure matches its bare history
+ *   - a hidden exit code ("; echo EXIT:$?") is recognised as a failure
+ *   - the resolved failure->fix chain is eligible for recall
+ *   - an unrelated unresolved failure does not displace it in the digest
+ *   - recall names the actual A/B/C evidence
+ *   - both recall and the digest stay inside their token budgets
+ *   - the synthetic secret occurs zero times in any durable artifact
  */
 function preflightAmbient(scenario: Scenario, repoDir: string, nmHome: string): string | null {
   const env = { ...process.env, NEXUSMEM_HOME: nmHome };
@@ -143,23 +187,19 @@ function preflightAmbient(scenario: Scenario, repoDir: string, nmHome: string): 
   if (/do not exist here/.test(status)) return 'install: the installed hook points at paths this machine does not have';
   if (/capture\s+degraded/.test(status)) return 'capture: health is degraded, so events are being dropped';
 
-  const payload = JSON.stringify({
-    session_id: 'preflight',
+  const failurePayload = (command: string) => ({
+    session_id: preflightSession(),
     cwd: repoDir,
     hook_event_name: 'PostToolUseFailure',
     tool_name: 'Bash',
-    tool_input: { command: scenario.command },
-    tool_use_id: 'toolu_preflight',
-    error: 'Exit code 1\npreflight',
+    tool_input: { command },
+    tool_use_id: `toolu_${preflightSessionId}`,
+    error: `Exit code 1\n${scenario.command} failed`,
     duration_ms: 1,
   });
-  const recall = spawnSync(process.execPath, [CLI, 'agent', 'recall', '--trigger', 'failure'], {
-    cwd: repoDir,
-    env,
-    input: payload,
-    encoding: 'utf8',
-  });
-  const text = recall.stdout ?? '';
+
+  // --- the A/B/C chain exists and recall names it ----------------------
+  const text = recallOf(repoDir, env, failurePayload(scenario.command));
   if (!text.includes('failed in this repository before')) return 'recall: no prior failure was returned for the task command';
   // Both abandoned attempts and whatever day 1 ended green on have to be
   // reachable, or the arm is credited with information it never had. Note that
@@ -170,6 +210,56 @@ function preflightAmbient(scenario: Scenario, repoDir: string, nmHome: string): 
   }
   for (const unrelated of UNRELATED_COMMANDS) {
     if (text.includes(unrelated)) return `recall: unrelated command "${unrelated}" leaked into the failure recall`;
+  }
+  // The resolved failure->fix chain must actually be eligible for recall,
+  // not merely present as bare failures with nothing correlated to them.
+  if (!text.includes('fixed on')) return 'recall: the resolved failure->fix chain is not eligible for recall';
+  if (text.length > MAX_RECALL_CHARS) return `recall: text exceeded MAX_RECALL_CHARS (${text.length})`;
+
+  // --- a live cd-wrapped command still matches its bare history ---------
+  const wrapped = recallOf(repoDir, env, failurePayload(`cd "${repoDir}" && ${scenario.command}`));
+  if (!wrapped.includes('failed in this repository before')) return 'execHash: a "cd <cwd> && <command>" wrapped failure did not match its bare history';
+
+  // --- a hidden exit code is recognised as a failure --------------------
+  const hiddenExit = recallOf(repoDir, env, {
+    session_id: preflightSession(),
+    cwd: repoDir,
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Bash',
+    tool_input: { command: scenario.command },
+    tool_response: { stdout: `${scenario.command} failed\nEXIT:1`, stderr: '', interrupted: false },
+    tool_use_id: `toolu_${preflightSessionId}`,
+  });
+  if (!hiddenExit.includes('failed in this repository before')) return 'exit-status: a hidden non-zero exit code ("; echo EXIT:1") was not recognised as a failure';
+
+  // --- the digest surfaces the resolved chain, not displaced ------------
+  // spawnSync, not the execFileSync-based `run()`: found live -- `run()`'s
+  // `input` option silently returned empty stdout in this environment even
+  // though the child process itself succeeded, which made every ambient
+  // trial fail this check regardless of the real (correct) digest content.
+  // spawnSync with the identical input and args returns it correctly.
+  const digest =
+    spawnSync(process.execPath, [CLI, 'agent', 'session-start'], {
+      cwd: repoDir,
+      env,
+      input: JSON.stringify({ session_id: preflightSession(), cwd: repoDir, hook_event_name: 'SessionStart', source: 'startup' }),
+      encoding: 'utf8',
+    }).stdout ?? '';
+  const firstLine = scenario.command.split(/\r?\n/)[0]!;
+  const fixLeaf = scenario.fix.file.split('/').pop()!;
+  const day1Leaf = scenario.attemptC.file.split('/').pop()!;
+  if (!digest.includes(firstLine) && !digest.includes(fixLeaf) && !digest.includes(day1Leaf)) {
+    return 'digest: the session-start digest does not mention the resolved chain at all';
+  }
+  for (const unrelated of UNRELATED_COMMANDS) {
+    if (digest.includes(unrelated) && digest.indexOf(unrelated) < digest.indexOf(firstLine)) {
+      return `digest: an unrelated unresolved failure ("${unrelated}") was ranked ahead of the resolved chain`;
+    }
+  }
+  if (digest.length > MAX_DIGEST_CHARS) return `digest: text exceeded MAX_DIGEST_CHARS (${digest.length})`;
+
+  for (const t of [text, wrapped, hiddenExit, digest]) {
+    if (t.includes(EVAL_SECRET)) return 'security: the raw fake credential was echoed in CLI output';
   }
   return null;
 }
@@ -417,7 +507,12 @@ async function runOnce(scenario: Scenario, arm: Arm, repeat: number): Promise<Ru
     recallItems: 0,
     irrelevantRecallItems: 0,
     recallFired: false,
+    recallFiredCount: 0,
+    recallContainedABC: false,
     digestFired: false,
+    digestContainedResolvedChain: false,
+    digestContainedStaleWarning: false,
+    digestDisplaced: false,
     nexusMemToolCalls: 0,
     noticedNexusMem: false,
   };
@@ -483,8 +578,36 @@ async function runOnce(scenario: Scenario, arm: Arm, repeat: number): Promise<Ru
     irrelevantRecallItems: items.filter((i) => UNRELATED_COMMANDS.some((c) => i.includes(c))).length,
     firstInvestigationAction: t.firstAction,
     finalChangedFiles: changed,
+    // "failed in this repository before" is `recallFailure`'s own fixed header
+    // text -- fires once per real PostToolUseFailure/recovered-exit-status
+    // hook invocation during the run, so counting occurrences (not just
+    // whether at least one fired) is what "how many actual failures
+    // triggered recall" (Phase-5.1 eval plan §5) actually asks for.
     recallFired: t.injections.some((i) => i.includes('failed in this repository before')),
-    digestFired: t.injections.some((i) => i.includes('with no recorded fix')),
+    recallFiredCount: t.injections.filter((i) => i.includes('failed in this repository before')).length,
+    recallContainedABC: t.injections.some(
+      (i) =>
+        i.includes('failed in this repository before') &&
+        [scenario.attemptA.file, scenario.attemptB.file, scenario.attemptC.file].some(
+          (f) => i.includes(f) || i.includes(f.split('/').pop()!),
+        ),
+    ),
+    // The digest's header ("N relevant command(s) from the last N days") is
+    // present in every composition since the Phase-5.1 redesign -- keying
+    // detection on "with no recorded fix" alone (the old, unresolved-only
+    // wording) would silently miss a digest that fired showing only a
+    // resolved or stale chain, which is exactly the case this rerun exists
+    // to measure. Fixed here as the deterministic harness bug it is, before
+    // any trial ran.
+    digestFired: t.injections.some((i) => i.includes('relevant command(s) from the last')),
+    digestContainedResolvedChain: t.injections.some((i) => i.includes('relevant command(s) from the last') && i.includes('fixed')),
+    digestContainedStaleWarning: t.injections.some((i) => i.includes('no longer holds')),
+    digestDisplaced: t.injections.some((i) => {
+      if (!i.includes('relevant command(s) from the last')) return false;
+      const ownIndex = i.indexOf(scenario.command.split(/\r?\n/)[0]!);
+      if (ownIndex === -1) return false;
+      return UNRELATED_COMMANDS.some((c) => i.includes(c) && i.indexOf(c) < ownIndex);
+    }),
     nexusMemToolCalls: t.nexusMemToolCalls,
     noticedNexusMem: t.noticedNexusMem,
   };

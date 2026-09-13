@@ -44,7 +44,12 @@ interface Run {
   irrelevantRecallItems: number;
   irrelevantInjections: number;
   recallFired: boolean;
+  recallFiredCount: number;
+  recallContainedABC: boolean;
   digestFired: boolean;
+  digestContainedResolvedChain: boolean;
+  digestContainedStaleWarning: boolean;
+  digestDisplaced: boolean;
   nexusMemToolCalls: number;
   noticedNexusMem: boolean;
 }
@@ -74,7 +79,13 @@ interface Summary {
   medianMsToSuccess: number | null;
   medianInjectedTokens: number | null;
   recallFired: [number, number];
+  /** Recall fired AND actually named the seeded A/B/C evidence -- not just "something". */
+  usefulRecall: [number, number];
+  totalRecallTriggers: number;
   digestFired: [number, number];
+  digestResolved: [number, number];
+  digestStaleWarning: [number, number];
+  digestDisplaced: [number, number];
   irrelevantMemory: [number, number];
   medianRecallItems: number | null;
   medianIrrelevantItems: number | null;
@@ -105,7 +116,12 @@ function summarize(runs: readonly Run[]): Summary {
     medianMsToSuccess: median(succeeded.map((r) => r.durationMs)),
     medianInjectedTokens: of((r) => Math.round(r.injectedChars / CHARS_PER_TOKEN)),
     recallFired: count((r) => r.recallFired),
+    usefulRecall: count((r) => r.recallFired && r.recallContainedABC),
+    totalRecallTriggers: runs.reduce((s, r) => s + r.recallFiredCount, 0),
     digestFired: count((r) => r.digestFired),
+    digestResolved: count((r) => r.digestContainedResolvedChain),
+    digestStaleWarning: count((r) => r.digestContainedStaleWarning),
+    digestDisplaced: count((r) => r.digestDisplaced),
     irrelevantMemory: count((r) => r.irrelevantRecallItems > 0),
     medianRecallItems: of((r) => r.recallItems),
     medianIrrelevantItems: of((r) => r.irrelevantRecallItems),
@@ -136,6 +152,10 @@ function row(arm: string, s: Summary): string {
     `items ${num(s.medianRecallItems, 0)}`,
     `noise ${rate(s.irrelevantMemory)}`,
     `recall ${rate(s.recallFired)}`,
+    `useful ${rate(s.usefulRecall)}`,
+    `digestFix ${rate(s.digestResolved)}`,
+    `stale ${rate(s.digestStaleWarning)}`,
+    `displaced ${rate(s.digestDisplaced)}`,
     `mcpCalls ${String(s.mcpToolCalls).padStart(3)}`,
     `noticed ${rate(s.noticed)}`,
     `$${num(s.medianCostUsd, 3)}`,
