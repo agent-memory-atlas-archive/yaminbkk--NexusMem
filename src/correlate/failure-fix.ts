@@ -13,7 +13,8 @@ import type { MemoryStore } from '../store/store.js';
  *
  * - **Same-command retry.** A later `shell_command` in the same project and
  *   `cwd`, the *exact* normalized command text (trim + collapse whitespace +
- *   lowercase), `exitCode === 0`, within `retryWindowMs`. High precision by
+ *   lowercase) -- or, when both rows are agent-recorded, the same `execHash`
+ *   -- `exitCode === 0`, within `retryWindowMs`. High precision by
  *   construction, low recall: a fix that changes the command itself (a typo
  *   correction, an added flag) is invisible to an exact-text match. Not
  *   attempted here -- fuzzy matching is a stretch goal, not this pass's job.
@@ -101,6 +102,8 @@ interface FailureRow {
   command: string | null;
   /** Hash of the raw, pre-redaction command; absent on rows written before it was recorded. */
   command_hash: string | null;
+  /** Agent rows only: the execution the command reduces to, across cd and exit-echo wrappers. */
+  exec_hash: string | null;
   cwd: string | null;
   source: string | null;
 }
@@ -198,7 +201,8 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
   const failures = db
     .prepare(
       `SELECT id, ts_epoch, source, json_extract(meta, '$.command') AS command,
-              json_extract(meta, '$.commandHash') AS command_hash, json_extract(meta, '$.cwd') AS cwd
+              json_extract(meta, '$.commandHash') AS command_hash, json_extract(meta, '$.execHash') AS exec_hash,
+              json_extract(meta, '$.cwd') AS cwd
        FROM nodes
        WHERE project_id = ? AND kind = 'shell_command'
          AND source_ts IS NOT NULL
@@ -217,9 +221,13 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
        AND json_extract(n.meta, '$.exitCode') = 0
        AND json_extract(n.meta, '$.cwd') IS NOT NULL
        AND n.ts_epoch > ? AND n.ts_epoch <= ?
-       AND lower(trim(json_extract(n.meta, '$.command'))) = ?
        AND (json_extract(n.meta, '$.cwd') IS ? OR json_extract(n.meta, '$.cwd') = ?)
-       AND (? IS NULL OR json_extract(n.meta, '$.commandHash') = ?)
+       AND CASE
+         WHEN ? IS NOT NULL AND json_extract(n.meta, '$.execHash') IS NOT NULL
+           THEN json_extract(n.meta, '$.execHash') = ?
+         ELSE lower(trim(json_extract(n.meta, '$.command'))) = ?
+           AND (? IS NULL OR json_extract(n.meta, '$.commandHash') = ?)
+       END
      ORDER BY n.ts_epoch ASC LIMIT 1`,
   );
 
@@ -239,20 +247,24 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
   for (const failure of failures) {
     if (!failure.command) continue;
 
-    // Redaction can make different raw commands (TOKEN=a cmd, TOKEN=b cmd) store identical text,
-    // so a redacted command must also match on the raw-command hash; without one it is ambiguous.
+    // Two agent rows compare by execHash, so `cd "<cwd>" && cmd; echo "exit: $?"` and a bare `cmd` are
+    // one execution. Anything else compares text as before. Redaction can make different raw commands
+    // (TOKEN=a cmd, TOKEN=b cmd) store identical text, so a redacted command must also match on the
+    // raw-command hash; without one ('' never matches) the text comparison is ambiguous and fails.
     const redacted = failure.command.includes(REDACTION_MARK);
-    const requiredHash = redacted ? failure.command_hash : null;
+    const requiredHash = redacted ? (failure.command_hash ?? '') : null;
     const retry =
-      redacted && !requiredHash
+      redacted && !failure.command_hash && !failure.exec_hash
         ? undefined
         : (findRetry.get(
             projectId,
             failure.ts_epoch,
             failure.ts_epoch + retryWindowMs,
+            failure.cwd,
+            failure.cwd,
+            failure.exec_hash,
+            failure.exec_hash,
             normalizeCommand(failure.command),
-            failure.cwd,
-            failure.cwd,
             requiredHash,
             requiredHash,
           ) as RetryRow | undefined);
