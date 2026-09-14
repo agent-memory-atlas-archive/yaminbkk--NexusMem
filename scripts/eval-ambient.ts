@@ -1,9 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { redactAgentEvent } from '../src/agent/event.js';
 import { MAX_DIGEST_CHARS, MAX_RECALL_CHARS } from '../src/agent/recall.js';
+import { repoRelative } from '../eval/ambient/paths.js';
 import { SCENARIOS, type Scenario } from '../eval/ambient/scenario.js';
 
 /**
@@ -453,7 +454,7 @@ function readTranscript(path: string, repoDir: string): Transcript {
         if (EDIT_TOOLS.has(name)) {
           const filePath = String((block.input as Record<string, unknown> | undefined)?.file_path ?? '');
           if (filePath) {
-            const rel = relative(repoDir, filePath).split('\\').join('/');
+            const rel = repoRelative(repoDir, filePath);
             if (!t.editIndex.has(rel)) {
               t.editedFiles.push(rel);
               t.editIndex.set(rel, t.toolCalls);
