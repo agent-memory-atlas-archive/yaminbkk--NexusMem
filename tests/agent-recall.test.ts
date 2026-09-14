@@ -319,6 +319,137 @@ describe('recallSessionStart', () => {
   });
 });
 
+/**
+ * A digest entry is one execution, not one display string. Agent rows carry
+ * execHash (the raw command reduced to its one real execution), so a live
+ * `cd "<cwd>" && npm test; echo "exit: $?"` and a bare `npm test` are the same
+ * entry, while two commands that only redact to the same text are not.
+ */
+describe('recallSessionStart: execution identity', () => {
+  const NOW = new Date(Date.parse('2026-09-04T12:00:00.000Z'));
+  const WRAPPED = `cd "${ROOT}" && npm test; echo "exit: $?"`;
+  const seedAgent = (events: AgentEvent[], project = PROJECT) =>
+    store.upsertNodes(collectAgentEvents(events, project, { repoRoot: ROOT }));
+  const edit = (minutes: number) => event({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(minutes) });
+  const entries = (text: string) => text.split('\n').filter((l) => l.startsWith('- '));
+
+  function legacyNode(id: string, command: string, minutes: number, meta: Record<string, unknown> = {}): MemoryNode {
+    return {
+      id,
+      kind: 'shell_command',
+      projectId: PROJECT,
+      ts: at(minutes),
+      sourceTs: at(minutes),
+      source: 'shell:pwsh-hook',
+      title: `$ ${command}`,
+      body: `$ ${command}`,
+      files: [],
+      signal: 0.3,
+      provenance: 'observed',
+      meta: { command, cwd: ROOT, exitCode: 1, durationMs: 5, tsApprox: false, ...meta },
+    };
+  }
+
+  it('shows one entry for the same execution, whether it ran bare, cd-wrapped or behind an exit echo', () => {
+    seedAgent([
+      event({ command: 'npm test', ts: at(0) }),
+      event({ command: `cd "${ROOT}" && npm test`, ts: at(1) }),
+      event({ command: WRAPPED, ts: at(2) }),
+    ]);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.unresolved).toBe(1);
+    expect(entries(digest.text)).toHaveLength(1);
+    expect(digest.text).toContain('npm test');
+  });
+
+  it('calls a wrapped fix stale once the bare command fails again, instead of one resolved and one unresolved entry', () => {
+    seedAgent([event({ command: WRAPPED, ts: at(0) }), edit(1), event({ command: WRAPPED, outcome: 'ok', exitCode: 0, ts: at(2) })]);
+    correlateFailures(store, PROJECT);
+    seedAgent([event({ command: 'npm test', ts: at(30) })]);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest).toMatchObject({ stale: 1, resolved: 0, unresolved: 0 });
+    expect(entries(digest.text)).toHaveLength(1);
+    expect(digest.text).toContain('no longer holds');
+  });
+
+  it('keeps two commands apart when they differ only in a credential that redacts to the same text', () => {
+    seedAgent([
+      event({ command: 'TOKEN=synthetic-aaaa1111 npm run deploy', ts: at(0) }),
+      edit(1),
+      event({ command: 'TOKEN=synthetic-aaaa1111 npm run deploy', outcome: 'ok', exitCode: 0, ts: at(2) }),
+    ]);
+    correlateFailures(store, PROJECT);
+    seedAgent([event({ command: 'TOKEN=synthetic-bbbb2222 npm run deploy', ts: at(30) })]);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    // Not "fixed, but failed again": the later failure is a different execution.
+    expect(digest).toMatchObject({ resolved: 1, unresolved: 1, stale: 0 });
+    expect(digest.text).not.toContain('synthetic-');
+  });
+
+  it('does not spend a digest slot on each spelling of one execution', () => {
+    seedAgent([
+      event({ command: 'npm test', ts: at(0) }),
+      event({ command: `cd "${ROOT}" && npm test`, ts: at(1) }),
+      event({ command: WRAPPED, ts: at(2) }),
+      ...['cargo build', 'go test', 'make lint'].map((command, i) => event({ command, ts: at(10 + i) })),
+    ]);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.unresolved).toBe(4);
+    expect(entries(digest.text)).toHaveLength(3);
+    expect(digest.text).toContain('and 1 other(s)');
+    expect(digest.text.length).toBeLessThanOrEqual(MAX_DIGEST_CHARS);
+  });
+
+  it('keeps another project history out, even for the same execution', () => {
+    seedAgent([event({ command: WRAPPED, ts: at(0) })], 'someone-else');
+    seedAgent([event({ command: 'npm test', ts: at(1) })]);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.unresolved).toBe(1);
+    expect(recallSessionStart(store, 'someone-else', NOW)!.unresolved).toBe(1);
+  });
+
+  it('still merges a human shell run of the same plain command, which carries only its raw-command hash', () => {
+    seedAgent([event({ command: WRAPPED, ts: at(0) })]);
+    store.upsertNodes([legacyNode('human-npm-test', 'npm test', 5, { commandHash: HASH('npm test') })]);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.unresolved).toBe(1);
+  });
+
+  it('never merges redacted legacy rows that have no hash to tell them apart', () => {
+    store.upsertNodes([
+      legacyNode('legacy-a', 'TOKEN: [redacted] npm run deploy', 0),
+      legacyNode('legacy-b', 'TOKEN: [redacted] npm run deploy', 1),
+    ]);
+
+    expect(recallSessionStart(store, PROJECT, NOW)!.unresolved).toBe(2);
+  });
+
+  it('still groups plain legacy rows with no hashes by their command, as before', () => {
+    store.upsertNodes([legacyNode('legacy-1', 'npm test', 0), legacyNode('legacy-2', 'npm test', 1)]);
+
+    expect(recallSessionStart(store, PROJECT, NOW)!.unresolved).toBe(1);
+  });
+
+  it('keeps a discussion-linked newest run uncertain, never fixed, across spellings', () => {
+    seedAgent([event({ command: WRAPPED, ts: at(0) })]);
+    const [bare] = collectAgentEvents([event({ command: 'npm test', ts: at(10) })], PROJECT, { repoRoot: ROOT });
+    const [other] = collectAgentEvents([event({ command: 'git log', outcome: 'ok', exitCode: 0, ts: at(12) })], PROJECT, { repoRoot: ROOT });
+    store.upsertNodes([bare!, other!]);
+    store.linkNodes(bare!.id, other!.id, RESOLVED_BY_DISCUSSION);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest).toMatchObject({ uncertain: 1, resolved: 0, unresolved: 0 });
+    expect(entries(digest.text)).toHaveLength(1);
+    expect(digest.text).not.toMatch(/\bfixed\b/);
+  });
+});
+
 describe('recall quota', () => {
   let statePath: string;
 

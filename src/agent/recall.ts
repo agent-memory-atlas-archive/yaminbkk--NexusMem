@@ -1,3 +1,4 @@
+import { REDACTION_MARK } from '../conversation/redact.js';
 import { RESOLVED_BY_DISCUSSION, RESOLVED_BY_RETRY } from '../correlate/failure-fix.js';
 import type { MemoryStore } from '../store/store.js';
 
@@ -154,6 +155,28 @@ export function recallFailure(store: MemoryStore, projectId: string, execHash: s
   return { text: [header, ...lines, footer].join('\n').slice(0, MAX_RECALL_CHARS), matched: past.length, resolved, superseded };
 }
 
+const displayCommand = (row: NodeRow): string | undefined =>
+  (JSON.parse(row.meta) as { command?: string }).command?.split(/\r?\n/)[0]?.trim() || undefined;
+
+/**
+ * Which digest entry a failure belongs to: one execution, not one display
+ * string. An agent row's execHash already names its execution across cd and
+ * exit-echo wrappers. A row without one (human shell history, or written
+ * before execHash existed) falls back to its raw-command hash, which equals
+ * the execHash of the same command run plain -- so a human `npm test` still
+ * joins the agent's. Only a row with neither hash uses its text, and never
+ * when that text was redacted: two different secrets can read the same.
+ */
+function executionKey(row: NodeRow): string | null {
+  const meta = JSON.parse(row.meta) as { command?: string; execHash?: unknown; commandHash?: unknown };
+  const command = displayCommand(row);
+  if (!command) return null;
+  if (typeof meta.execHash === 'string') return `exec:${meta.execHash}`;
+  if (typeof meta.commandHash === 'string') return `exec:${meta.commandHash}`;
+  if (meta.command!.includes(REDACTION_MARK)) return `row:${row.id}`;
+  return `text:${command}`;
+}
+
 /** ~150 tokens. A session opener has to be cheap enough that nobody would turn it off. */
 export const MAX_DIGEST_CHARS = 600;
 const DIGEST_WINDOW_DAYS = 14;
@@ -220,20 +243,25 @@ export function recallSessionStart(store: MemoryStore, projectId: string, now = 
   const rows = store.raw.prepare(SELECT_RECENT_FAILURES).all(projectId, since) as NodeRow[];
 
   // Rows arrive newest-first (the query orders by ts DESC); grouping
-  // preserves that, so each group's first entry is that command's most
+  // preserves that, so each group's first entry is that execution's most
   // recent failure in the window.
-  const byCommand = new Map<string, NodeRow[]>();
+  const byExecution = new Map<string, { command: string; rows: NodeRow[] }>();
   for (const row of rows) {
-    const command = (JSON.parse(row.meta) as { command?: string }).command?.split(/\r?\n/)[0]?.trim();
-    if (!command) continue;
-    const group = byCommand.get(command);
-    if (group) group.push(row);
-    else byCommand.set(command, [row]);
+    const key = executionKey(row);
+    if (!key) continue;
+    const command = displayCommand(row)!;
+    const group = byExecution.get(key);
+    if (!group) byExecution.set(key, { command, rows: [row] });
+    else {
+      group.rows.push(row);
+      // Presentation only: the shortest spelling, so a bare `npm test` names the entry rather than its cd wrapper.
+      if (command.length < group.command.length) group.command = command;
+    }
   }
-  if (byCommand.size === 0) return null;
+  if (byExecution.size === 0) return null;
 
   const summaries: CommandSummary[] = [];
-  for (const [command, [newest, ...older]] of byCommand) {
+  for (const { command, rows: [newest, ...older] } of byExecution.values()) {
     const [newestFixId] = store.getLinkedNodeIds(newest!.id, RESOLVED_BY_RETRY);
     if (newestFixId) {
       const fix = store.raw.prepare(SELECT_BY_ID).get(newestFixId) as NodeRow | undefined;
