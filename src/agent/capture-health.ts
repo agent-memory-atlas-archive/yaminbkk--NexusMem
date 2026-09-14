@@ -24,7 +24,14 @@ import { parseAgentEventLine } from './record.js';
 export type CaptureHealth = 'healthy' | 'stale' | 'degraded' | 'never-observed' | 'unknown';
 
 /** Reasons the hook can record. A closed set, so no payload text can ever reach the file. */
-export const DROP_REASONS = ['unparsable-json', 'unsupported-event', 'unsupported-tool', 'missing-fields', 'write-failed'] as const;
+export const DROP_REASONS = [
+  'unparsable-json',
+  'unsupported-event',
+  'unsupported-tool',
+  'missing-fields',
+  'write-failed',
+  'payload-too-large',
+] as const;
 export type DropReason = (typeof DROP_REASONS)[number];
 
 /**
