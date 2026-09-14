@@ -6,10 +6,11 @@ import type { MemoryStore } from '../store/store.js';
  * this repository, and renders it for an agent to read.
  *
  * Deliberately narrow. It matches on `execHash` -- the hash of the raw
- * command with only a same-cwd `cd` prefix stripped (see
- * `canonicalizeCommand` in `agent/event.ts`), so two redacted commands that
- * render the same text can never be confused, and a live `cd "<cwd>" && npm
- * test` still finds a historical bare `npm test` -- and returns nothing at
+ * command reduced to its one real execution, with navigation and
+ * observation segments around it dropped (see `canonicalizeCommand` in
+ * `agent/event.ts`), so two redacted commands that render the same text can
+ * never be confused, and a live `cd "<cwd>" && ls && npm test; echo "exit:
+ * $?"` still finds a historical bare `npm test` -- and returns nothing at
  * all when there is no match. Silence is the default, and no model,
  * embedding or network call is on this path.
  */

@@ -6,11 +6,15 @@ import { sha256Hex } from '../src/core/ids.js';
  * The eval measured this directly: a live Claude Code Bash call is routinely
  * `cd "<repo>" && npm test`, while the historical record of the same command
  * is bare `npm test` -- an exact-hash match on the raw text can never find
- * it. `canonicalizeCommand` is the one narrow, provably-safe rewrite that
- * closes that gap: strip a `cd` prefix, but only when it names the exact cwd
- * the event already carries. Everything else -- a `cd` elsewhere, an env-var
- * prefix, `sudo`, a pipe, a second command -- is left as a different command,
- * on purpose: a wrong match here would be worse than a missed one.
+ * it. `canonicalizeCommand` closes that gap with a semantic allowlist: drop
+ * navigation and observation segments, keep the single real execution.
+ * Everything else -- a `cd` elsewhere, an env-var prefix, `sudo`, a pipe, a
+ * second real command -- is left as a different command, on purpose: a wrong
+ * match here would be worse than a missed one.
+ *
+ * The shapes in `real Claude Code compounds` below are not invented: each is
+ * a command form actually emitted by Claude Code during the Phase-5 eval,
+ * taken from the saved transcripts, with only the repository path replaced.
  */
 
 describe('canonicalizeCommand', () => {
@@ -92,6 +96,127 @@ describe('canonicalizeCommand', () => {
     const a = canonicalizeCommand('cd "/repo" && node check.js', '/repo');
     const b = canonicalizeCommand('cd "/repo" && node check.js', '/repo');
     expect(a).toBe(b);
+  });
+});
+
+/**
+ * Every shape below was emitted by Claude Code during the Phase-5 eval. The
+ * counts are how many of the 69 task-execution Bash calls used that exact
+ * form, so a regression here is a measured loss of delivery, not a
+ * hypothetical one.
+ */
+describe('real Claude Code compounds, from the Phase-5 transcripts', () => {
+  const cwd = 'C:\\Users\\dev\\AppData\\Local\\Temp\\workspace-aCFzjL\\app';
+
+  const matches: Array<[string, string]> = [
+    ['cd wrapper (11 calls)', `cd "${cwd}" && node check.js`],
+    ['cd + trailing lowercase exit echo (16 calls)', `cd "${cwd}" && node check.js; echo "exit: $?"`],
+    ['cd + trailing "exit=" echo (6 calls)', `cd "${cwd}" && node check.js; echo "exit=$?"`],
+    ['cd + trailing "EXIT: " echo (5 calls)', `cd "${cwd}" && node check.js; echo "EXIT: $?"`],
+    ['cd + trailing "EXIT:" echo (4 calls)', `cd "${cwd}" && node check.js; echo "EXIT:$?"`],
+    ['cd + trailing "Exit: " echo (1 call)', `cd "${cwd}" && node check.js; echo "Exit: $?"`],
+    ['cd + ls observation prefix (3 calls)', `cd "${cwd}" && ls && node check.js`],
+    ['cd + ls + echo separator prefix (2 calls)', `cd "${cwd}" && ls && echo "---" && node check.js`],
+    ['cd + ls -la + unquoted echo prefix (1 call)', `cd "${cwd}" && ls -la && echo --- && node check.js`],
+    ['bare + trailing "EXIT: " echo (3 calls)', 'node check.js; echo "EXIT: $?"'],
+    ['bare + trailing "exit: " echo (2 calls)', 'node check.js; echo "exit: $?"'],
+    ['bare + trailing "EXIT:" echo (2 calls)', 'node check.js; echo "EXIT:$?"'],
+    ['bare (1 call)', 'node check.js'],
+  ];
+
+  for (const [label, raw] of matches) {
+    it(`MATCH: ${label}`, () => {
+      expect(canonicalizeCommand(raw, cwd)).toBe('node check.js');
+    });
+  }
+
+  /**
+   * 12 of the 69 calls piped the check into `head`. Left deliberately
+   * unmatched: `head` closing the pipe can change what the producer does, and
+   * the exit status belongs to `head`, not to the command being identified.
+   * Classified UNKNOWN in the delivery corpus rather than forced to match.
+   */
+  it('UNKNOWN: a pipeline keeps its pipe and does not collapse to the bare command (11 calls)', () => {
+    const raw = `cd "${cwd}" && node check.js 2>&1 | head -100`;
+    expect(canonicalizeCommand(raw, cwd)).not.toBe('node check.js');
+    expect(canonicalizeCommand(raw, cwd)).toBe('node check.js 2>&1 | head -100');
+  });
+
+  it('UNKNOWN: a bare pipeline is left untouched (1 call)', () => {
+    const raw = 'node check.js 2>&1 | head -100';
+    expect(canonicalizeCommand(raw, cwd)).toBe(raw);
+  });
+
+  it('MATCH: the observation prefix works with a POSIX-style cwd too', () => {
+    const posix = '/home/dev/repo';
+    expect(canonicalizeCommand(`cd "${posix}" && ls -la && echo --- && node check.js; echo "exit: $?"`, posix)).toBe('node check.js');
+  });
+
+  it('MATCH: a cwd containing spaces still parses as one cd argument inside a compound', () => {
+    const spaced = 'C:\\Users\\dev\\my repo';
+    expect(canonicalizeCommand(`cd "${spaced}" && ls && node check.js; echo "exit: $?"`, spaced)).toBe('node check.js');
+  });
+});
+
+describe('conservative refusals: shapes that must never collapse to the bare command', () => {
+  const cwd = '/home/dev/repo';
+  const unchanged = (raw: string) => expect(canonicalizeCommand(raw, cwd)).toBe(raw);
+
+  it('NO MATCH: an env-var export before the target could change its behaviour', () => {
+    unchanged('export X=1 && node check.js');
+  });
+
+  it('NO MATCH: a build step before the target is a second real execution', () => {
+    unchanged('node build.js && node check.js');
+  });
+
+  it('NO MATCH: an unrecognised setup word before the target', () => {
+    unchanged('setup && node check.js');
+  });
+
+  it('NO MATCH: a cleanup command after the target', () => {
+    unchanged('node check.js ; cleanup');
+  });
+
+  it('NO MATCH: a cd to a different directory inside an otherwise safe compound', () => {
+    unchanged('cd /somewhere/else && ls && node check.js');
+  });
+
+  it('NO MATCH: sudo is part of the execution identity, not a prefix to drop', () => {
+    unchanged('sudo node check.js');
+  });
+
+  it('NO MATCH: a mutating git subcommand is not observation', () => {
+    unchanged('git checkout main && node check.js');
+    unchanged('git stash && node check.js');
+  });
+
+  it('NO MATCH: command substitution inside an otherwise observation-shaped segment', () => {
+    unchanged('echo $(rm -rf build) && node check.js');
+  });
+
+  it('NO MATCH: a redirection inside an otherwise observation-shaped segment', () => {
+    unchanged('echo seed > fixture.txt && node check.js');
+  });
+
+  it('NO MATCH: a backgrounded segment', () => {
+    unchanged('server & node check.js');
+  });
+
+  it('NO MATCH: two real executions cannot be reduced to one', () => {
+    unchanged('npm run build && npm test');
+  });
+
+  it('NO MATCH: observation segments alone name no execution', () => {
+    unchanged('ls && pwd');
+    unchanged(`cd ${cwd} && git status`);
+  });
+
+  it('MATCH: the spec\'s safe observation prefixes do collapse', () => {
+    expect(canonicalizeCommand('pwd && node check.js', cwd)).toBe('node check.js');
+    expect(canonicalizeCommand('ls && node check.js', cwd)).toBe('node check.js');
+    expect(canonicalizeCommand('git status && node check.js', cwd)).toBe('node check.js');
+    expect(canonicalizeCommand('git log --oneline -10 && node check.js', cwd)).toBe('node check.js');
   });
 });
 
