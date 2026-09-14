@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { redactAgentEvent } from '../src/agent/event.js';
 import { MAX_DIGEST_CHARS, MAX_RECALL_CHARS } from '../src/agent/recall.js';
 import { repoRelative } from '../eval/ambient/paths.js';
-import { SCENARIOS, type Scenario } from '../eval/ambient/scenario.js';
+import { revertsDayOneFix, SCENARIOS, type Scenario } from '../eval/ambient/scenario.js';
 
 /**
  * Does ambient memory change what the agent does?
@@ -166,6 +166,14 @@ function recallOf(repoDir: string, env: NodeJS.ProcessEnv, payload: object): str
  *   - capture health is not degraded
  *   - the A/B/C chain exists and is reachable
  *   - a live `cd "<cwd>" && <command>` failure matches its bare history
+ *   - so do the other compounds Claude really emits: an `ls`/`echo` prefix
+ *     and a trailing `; echo "exit: $?"`, which together account for most of
+ *     the 69 task-execution calls the Phase-5 transcripts recorded
+ *   - a compound that could have changed the run (`npm install &&`, an
+ *     export, a second execution, a pipeline, a trailing unknown command)
+ *     does NOT match
+ *   - a chain this fixture's own git history reverted is labelled as no
+ *     longer holding, and one it did not is left alone
  *   - a hidden exit code ("; echo EXIT:$?") is recognised as a failure
  *   - the resolved failure->fix chain is eligible for recall
  *   - an unrelated unresolved failure does not displace it in the digest
@@ -221,6 +229,36 @@ function preflightAmbient(scenario: Scenario, repoDir: string, nmHome: string): 
   const wrapped = recallOf(repoDir, env, failurePayload(`cd "${repoDir}" && ${scenario.command}`));
   if (!wrapped.includes('failed in this repository before')) return 'execHash: a "cd <cwd> && <command>" wrapped failure did not match its bare history';
 
+  // --- the compounds Claude actually emits reach the same history -------
+  // Every shape here was taken from the Phase-5 transcripts. A cd wrapper
+  // alone was never representative: it covered 11 of the 69 task-execution
+  // calls, and gating on it is what let the rerun measure recall at 2/9.
+  const realCompounds: Array<[string, string]> = [
+    ['trailing exit echo', `cd "${repoDir}" && ${scenario.command}; echo "exit: $?"`],
+    ['ls prefix', `cd "${repoDir}" && ls && ${scenario.command}`],
+    ['ls -la + echo separator prefix', `cd "${repoDir}" && ls -la && echo --- && ${scenario.command}`],
+    ['no cd, trailing exit echo', `${scenario.command}; echo "EXIT: $?"`],
+  ];
+  for (const [label, command] of realCompounds) {
+    if (!recallOf(repoDir, env, failurePayload(command)).includes('failed in this repository before')) {
+      return `execHash: a real Claude compound (${label}) did not match its bare history`;
+    }
+  }
+
+  // --- a compound that could have changed the run must NOT match --------
+  const unsafeCompounds: Array<[string, string]> = [
+    ['npm install prefix', `npm install && ${scenario.command}`],
+    ['env-var export prefix', `export NODE_ENV=test && ${scenario.command}`],
+    ['second real execution', `node build.js && ${scenario.command}`],
+    ['piped into head', `${scenario.command} 2>&1 | head -100`],
+    ['trailing unknown command', `${scenario.command} ; cleanup`],
+  ];
+  for (const [label, command] of unsafeCompounds) {
+    if (recallOf(repoDir, env, failurePayload(command)).includes('failed in this repository before')) {
+      return `execHash: an unsafe compound (${label}) incorrectly matched the bare history`;
+    }
+  }
+
   // --- a hidden exit code is recognised as a failure --------------------
   const hiddenExit = recallOf(repoDir, env, {
     session_id: preflightSession(),
@@ -258,6 +296,18 @@ function preflightAmbient(scenario: Scenario, repoDir: string, nmHome: string): 
     }
   }
   if (digest.length > MAX_DIGEST_CHARS) return `digest: text exceeded MAX_DIGEST_CHARS (${digest.length})`;
+
+  // --- a chain git has reverted is labelled, not repeated as current ----
+  // Read from the fixture's own history, so the expectation cannot drift:
+  // `stale-fix` is the scenario whose day-1 answer was backed out, and it is
+  // the one this must fire on.
+  const reverted = revertsDayOneFix(repoDir, scenario);
+  const saysStale = (t: string) => t.includes('no longer holds');
+  if (reverted && !saysStale(text)) return 'stale: git reverted the day-1 fix, but recall still presents it as current';
+  if (reverted && !saysStale(digest)) return 'stale: git reverted the day-1 fix, but the digest still presents it as current';
+  if (!reverted && (saysStale(text) || saysStale(digest))) {
+    return 'stale: a fix is labelled as no longer holding, but git contains no revert of it';
+  }
 
   for (const t of [text, wrapped, hiddenExit, digest]) {
     if (t.includes(EVAL_SECRET)) return 'security: the raw fake credential was echoed in CLI output';

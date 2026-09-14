@@ -75,6 +75,27 @@ export interface Scenario {
 
 export const deadEndFiles = (s: Scenario): string[] => [s.attemptA.file, s.attemptB.file];
 
+/** Conventional `revert: ...` and git's own `Revert "..."`, matching the product rule. */
+const REVERT_SUBJECT = /^revert(\([^)]*\))?[:!]|^revert\s+"/i;
+
+/**
+ * Does this scenario's own built history revert the file day 1 ended green
+ * on? Read back out of the real repository rather than declared as a flag, so
+ * a preflight expectation cannot drift away from the history it describes.
+ * `stale-fix` is the only scenario for which this is true, and that is the
+ * whole point of it.
+ */
+export function revertsDayOneFix(repoDir: string, scenario: Scenario): boolean {
+  const log = execFileSync('git', ['-C', repoDir, 'log', '--format=%x00%s', '--name-only'], { encoding: 'utf8' });
+  for (const entry of log.split('\0')) {
+    if (!entry.trim()) continue;
+    const [subject = '', ...rest] = entry.split(/\r?\n/);
+    if (!REVERT_SUBJECT.test(subject.trim())) continue;
+    if (rest.map((l) => l.trim()).filter(Boolean).includes(scenario.attemptC.file)) return true;
+  }
+  return false;
+}
+
 /** One string for every scenario and every arm. It names no file and no approach. */
 const TASK =
   '`node check.js` is failing in this repository. Find out why and fix it so the command exits 0. Do not change check.js itself.';

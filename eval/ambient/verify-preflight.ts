@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { redactAgentEvent } from '../../src/agent/event.js';
 import { MAX_DIGEST_CHARS, MAX_RECALL_CHARS } from '../../src/agent/recall.js';
-import { deadEndFiles, SCENARIOS, type Scenario } from './scenario.js';
+import { deadEndFiles, revertsDayOneFix, SCENARIOS, type Scenario } from './scenario.js';
 
 /**
  * The deterministic gate before any model eval: proves the Phase-5.1 fixes
@@ -12,7 +12,7 @@ import { deadEndFiles, SCENARIOS, type Scenario } from './scenario.js';
  * reach a real Claude-Code-shaped payload through the real CLI, before any
  * `claude` process is spawned. No model call anywhere in this file.
  *
- * Nine checks per scenario:
+ * Twelve checks per scenario:
  *   A. the historical A/B/C chain exists in the seeded database
  *   B. a real Claude-style `cd "<same cwd>" && <command>` failure matches
  *      the historical bare command (the execution-identity fix)
@@ -29,8 +29,15 @@ import { deadEndFiles, SCENARIOS, type Scenario } from './scenario.js';
  *   H. both recall and the digest stay inside their token budgets
  *   I. the synthetic secret this file plants occurs zero times in any
  *      NexusMem-owned durable artifact
+ *   J. the observation-prefixed compounds Claude really emits -- an `ls`/
+ *      `echo` prefix, a trailing `; echo "exit: $?"` -- reach the same
+ *      history as the bare command
+ *   K. a compound that changes state before the command (`npm install &&`,
+ *      `export X=1 &&`, a pipeline) does NOT match it
+ *   L. a chain this fixture's own git history has reverted is labelled as no
+ *      longer holding, and one it has not is left alone
  *
- *   npm run build && npx tsx eval/ambient/verify-preflight.ts
+ *   npm run build && npx tsx eval/ambient/verify-preflight.ts [repeats]
  */
 
 const CLI = join(process.cwd(), 'dist/cli/index.js');
@@ -264,11 +271,53 @@ function verify(scenario: Scenario): string[] {
 
     // --- F: an unrelated unresolved failure does not crowd it out -------
     const digest = sessionStart(dir, env);
-    if (!digest.includes(scenario.command.split(/\r?\n/)[0]!) && !digest.includes(fixLeaf) && !digest.includes(day1Leaf)) {
+    const commandLine = scenario.command.split(/\r?\n/)[0]!;
+    if (!digest.includes(commandLine) && !digest.includes(fixLeaf) && !digest.includes(day1Leaf)) {
       problems.push('F: the session-start digest does not mention the resolved chain at all');
     }
-    if (digest.includes(UNRELATED_COMMAND) && digest.indexOf(UNRELATED_COMMAND) < digest.indexOf(scenario.command)) {
+    // Ranking is only meaningful once the chain is actually present: an
+    // indexOf against an absent command returns -1 and silently passes.
+    if (!digest.includes(commandLine)) {
+      problems.push('F: the session-start digest never names the scenario command itself');
+    } else if (digest.includes(UNRELATED_COMMAND) && digest.indexOf(UNRELATED_COMMAND) < digest.indexOf(commandLine)) {
       problems.push('F: an unrelated unresolved failure was ranked ahead of the resolved chain');
+    }
+
+    // --- J: the compounds Claude really emits reach the same history -----
+    // Each is a shape taken from the Phase-5 transcripts, not an invented one.
+    const realCompounds: Array<[string, string]> = [
+      ['trailing exit echo', `cd "${dir}" && ${scenario.command}; echo "exit: $?"`],
+      ['ls prefix', `cd "${dir}" && ls && ${scenario.command}`],
+      ['ls -la + echo separator prefix', `cd "${dir}" && ls -la && echo --- && ${scenario.command}`],
+      ['no cd, trailing exit echo', `${scenario.command}; echo "EXIT: $?"`],
+    ];
+    for (const [label, command] of realCompounds) {
+      const text = recall(failurePayload(dir, command, errorText), dir, env);
+      if (!text.includes('failed in this repository before')) problems.push(`J: a real Claude compound (${label}) did not match its bare history`);
+    }
+
+    // --- K: a compound that could have changed the run does NOT match ----
+    const unsafeCompounds: Array<[string, string]> = [
+      ['npm install prefix', `npm install && ${scenario.command}`],
+      ['env-var export prefix', `export NODE_ENV=test && ${scenario.command}`],
+      ['second real execution', `node build.js && ${scenario.command}`],
+      ['piped into head', `${scenario.command} 2>&1 | head -100`],
+      ['trailing unknown command', `${scenario.command} ; cleanup`],
+    ];
+    for (const [label, command] of unsafeCompounds) {
+      const text = recall(failurePayload(dir, command, errorText), dir, env);
+      if (text.includes('failed in this repository before')) problems.push(`K: an unsafe compound (${label}) incorrectly matched the bare history`);
+    }
+
+    // --- L: a reverted chain is labelled, an unreverted one is not -------
+    const reverted = revertsDayOneFix(dir, scenario);
+    const saysStale = (text: string) => text.includes('no longer holds');
+    if (reverted) {
+      if (!saysStale(bareRecall)) problems.push('L: git reverted the day-1 fix, but recall still presents it as current');
+      if (!saysStale(digest)) problems.push('L: git reverted the day-1 fix, but the session-start digest still presents it as current');
+    } else {
+      if (saysStale(bareRecall)) problems.push('L: recall claims the fix no longer holds, but git contains no revert of it');
+      if (saysStale(digest)) problems.push('L: the digest claims the fix no longer holds, but git contains no revert of it');
     }
 
     // --- H: token budget -------------------------------------------------
@@ -301,12 +350,24 @@ function verify(scenario: Scenario): string[] {
   return problems;
 }
 
+/**
+ * Every pass rebuilds each fixture from scratch, so repeating it is a real
+ * stability check rather than a re-read of the same state: a check that only
+ * passes sometimes is worse than one that fails, because the model eval
+ * downstream would inherit the flake as a result.
+ */
+const REPEATS = Number(process.argv[2] ?? 1);
 let failed = false;
-for (const scenario of SCENARIOS) {
-  const problems = verify(scenario);
-  process.stdout.write(`${problems.length === 0 ? 'ok  ' : 'FAIL'} ${scenario.name}\n`);
-  for (const problem of problems) process.stdout.write(`       ${problem}\n`);
-  failed ||= problems.length > 0;
+
+for (let pass = 1; pass <= REPEATS; pass += 1) {
+  if (REPEATS > 1) process.stdout.write(`\npass ${pass}/${REPEATS}\n`);
+  for (const scenario of SCENARIOS) {
+    const problems = verify(scenario);
+    process.stdout.write(`${problems.length === 0 ? 'ok  ' : 'FAIL'} ${scenario.name}\n`);
+    for (const problem of problems) process.stdout.write(`       ${problem}\n`);
+    failed ||= problems.length > 0;
+  }
 }
+
 process.stdout.write(failed ? '\npreflight FAILED -- do not run the model eval\n' : '\npreflight passed -- safe to run the model eval\n');
 process.exit(failed ? 1 : 0);
