@@ -132,6 +132,20 @@ function splitSegments(command: string): string[] | null {
 /** Quote-aware so a repository path containing spaces still parses as one argument. */
 const CD_SEGMENT = /^cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))$/;
 
+/**
+ * `/c/Users/x` (Git Bash) and `/mnt/c/Users/x` (WSL) name the same directory
+ * as `C:\Users\x`, and the agent writes whichever spelling its shell handed
+ * it -- in one measured Phase-5 run it `cd`-ed to the Git Bash form while the
+ * hook reported the native one, and the two could not be related. Folded only
+ * for this comparison, not in `normalizePathForCompare`, which other callers
+ * use against recorded cwds that never take this form.
+ */
+const DRIVE_SPELLING = /^\/(?:mnt\/)?([a-zA-Z])\//;
+const sameDirectory = (a: string, b: string): boolean => {
+  const fold = (p: string) => normalizePathForCompare(p.replace(DRIVE_SPELLING, (_m, drive: string) => `${drive}:/`));
+  return fold(a) === fold(b);
+};
+
 function classify(segment: string, cwd: string | null): SegmentKind {
   if (UNSAFE_SEGMENT.test(segment)) return 'target';
 
@@ -142,7 +156,7 @@ function classify(segment: string, cwd: string | null): SegmentKind {
     if (!cwd) return 'target';
     const to = cd[1] ?? cd[2] ?? cd[3] ?? '';
     if (to === '.') return 'navigation';
-    return normalizePathForCompare(to) === normalizePathForCompare(cwd) ? 'navigation' : 'target';
+    return sameDirectory(to, cwd) ? 'navigation' : 'target';
   }
 
   const [head, next] = segment.split(/\s+/);

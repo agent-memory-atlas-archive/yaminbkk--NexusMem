@@ -147,6 +147,27 @@ describe('real Claude Code compounds, from the Phase-5 transcripts', () => {
     expect(canonicalizeCommand(raw, cwd)).toBe(raw);
   });
 
+  it('MATCH: a Git Bash cd target against a native Windows cwd, the real Phase-5 miss', () => {
+    // retry-regression/ambient/#3 emitted exactly this: the model cd-ed to the
+    // Git Bash spelling while the hook reported the native one, so the one
+    // trial that produced a genuine tool error still found no history.
+    const native = 'C:\\Users\\user-0118012023\\AppData\\Local\\Temp\\workspace-AH0HSV\\app';
+    const gitBash = '/c/Users/user-0118012023/AppData/Local/Temp/workspace-AH0HSV/app';
+    expect(canonicalizeCommand(`cd "${gitBash}" && ls -la && echo --- && node check.js`, native)).toBe('node check.js');
+    expect(canonicalizeCommand(`cd "${gitBash}" && node check.js; echo "exit: $?"`, native)).toBe('node check.js');
+  });
+
+  it('MATCH: a WSL cd target against a native Windows cwd', () => {
+    const native = 'C:\\Users\\dev\\app';
+    expect(canonicalizeCommand('cd "/mnt/c/Users/dev/app" && node check.js', native)).toBe('node check.js');
+  });
+
+  it('NO MATCH: a drive-shaped cd to a genuinely different directory still refuses', () => {
+    const native = 'C:\\Users\\dev\\app';
+    const raw = 'cd "/c/Users/dev/other" && node check.js';
+    expect(canonicalizeCommand(raw, native)).toBe(raw);
+  });
+
   it('MATCH: the observation prefix works with a POSIX-style cwd too', () => {
     const posix = '/home/dev/repo';
     expect(canonicalizeCommand(`cd "${posix}" && ls -la && echo --- && node check.js; echo "exit: $?"`, posix)).toBe('node check.js');
