@@ -96,6 +96,35 @@ describe('correlateFailures: agent attempts', () => {
     expect(store.getLinkedNodeIds(failure!.id, RESOLVED_BY_RETRY)).toEqual([]);
   });
 
+  it('does not credit a later edited pass once the command already passed without an edit', () => {
+    // fail -> pass (no edit) -> edit -> pass: the failure was gone before the edit happened,
+    // so linking the edited pass would claim a cause the evidence does not show.
+    seed([
+      agentEvent({ ts: at(0) }),
+      agentEvent({ outcome: 'ok', exitCode: 0, ts: at(2) }),
+      agentEvent({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(5) }),
+      agentEvent({ outcome: 'ok', exitCode: 0, ts: at(6) }),
+    ]);
+
+    expect(correlateFailures(store, PROJECT)).toMatchObject({ failuresExamined: 1, linkedByRetry: 0, unexplainedRetries: 1 });
+    const [failure] = store.raw
+      .prepare(`SELECT id FROM nodes WHERE project_id = ? AND json_extract(meta,'$.exitCode') = 1`)
+      .all(PROJECT) as Array<{ id: string }>;
+    expect(store.getLinkedNodeIds(failure!.id, RESOLVED_BY_RETRY)).toEqual([]);
+  });
+
+  it('still links the edited pass to a failure that came back after the unexplained one', () => {
+    seed([
+      agentEvent({ ts: at(0) }),
+      agentEvent({ outcome: 'ok', exitCode: 0, ts: at(2) }),
+      agentEvent({ ts: at(3) }),
+      agentEvent({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(5) }),
+      agentEvent({ outcome: 'ok', exitCode: 0, ts: at(6) }),
+    ]);
+
+    expect(correlateFailures(store, PROJECT)).toMatchObject({ failuresExamined: 2, linkedByRetry: 1, unexplainedRetries: 1 });
+  });
+
   it('still links human shell history, which never records files', () => {
     store.upsertNodes([shellNode('fail', { minutes: 0, exitCode: 1 }), shellNode('pass', { minutes: 30, exitCode: 0 })]);
 

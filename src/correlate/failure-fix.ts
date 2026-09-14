@@ -262,7 +262,8 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
       // with nothing edited in between is not evidence of a fix -- it is a
       // flake or a change of environment. Ambiguous beats a confident false
       // link. Human shell history records no files at all, so this can only be
-      // asked of agent-recorded pairs.
+      // asked of agent-recorded pairs. Only the earliest pass is considered, deliberately: once the
+      // command passed unexplained, a later edited pass cannot be credited with fixing this failure.
       const bothAgentRecorded = isAgentSource(failure.source) && isAgentSource(retry.source);
       if (bothAgentRecorded && retry.file_count === 0) {
         unexplainedRetries += 1;
