@@ -252,6 +252,36 @@ describe('redact: values that used to end the match early', () => {
     expect(redact(text)).toEqual({ text, redactedCount: 0 });
   });
 
+  it.each([
+    ['-u, double-quoted, space in user name', 'curl -u "alice smith:pw-TAIL" https://api.example.com'],
+    ['--user, double-quoted, space in user name', 'curl --user "alice smith:pw-TAIL" https://api.example.com'],
+    ['-u, single-quoted, space in user name', "curl -u 'alice smith:pw-TAIL' https://api.example.com"],
+    ['spaces in both user name and password', 'curl -u "alice smith:correct horse-TAIL" https://api.example.com'],
+    ['escaped quote in user name, space in password', `curl -u "al${BS}"ice:pass word-TAIL" https://api.example.com`],
+    ['escaped quote in password, space in user name', `curl -u "alice smith:pa${BS}"ss-TAIL" https://api.example.com`],
+    ['unclosed quote, space in user name', 'curl -u "alice smith:pw-TAIL'],
+    ['over-long quoted password', `curl -u "alice smith:${'Z'.repeat(600)}-TAIL" https://api.example.com`],
+  ])('redacts a quoted curl credential whose user name may hold a space: %s', (_label, input) => {
+    const { text } = redact(input);
+
+    expect(text).not.toContain('TAIL');
+    expect(text).toContain('[redacted]');
+    expect(redact(text)).toEqual({ text, redactedCount: 0 });
+  });
+
+  it('keeps a quoted curl user name readable, and leaves a quoted user with no password alone', () => {
+    expect(redact('curl -u "alice smith:pw-TAIL" https://api.example.com').text).toBe(
+      'curl -u "alice smith:[redacted]" https://api.example.com',
+    );
+    for (const input of [
+      'curl -u "alice smith" https://api.example.com:8443/v1',
+      'Note: the curl docs say user: admin is only an example',
+      'curl -u "alice smith:[redacted]" https://api.example.com',
+    ]) {
+      expect(redact(input)).toEqual({ text: input, redactedCount: 0 });
+    }
+  });
+
   const LONG = `${'Z'.repeat(600)}-TAIL`;
   const BT = String.fromCharCode(96);
   it.each([
