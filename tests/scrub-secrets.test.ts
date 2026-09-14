@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -142,6 +142,21 @@ describe('scrubDatabase', () => {
     // Nothing scrubbed, and the unprotected pre-redaction copy is gone rather than left on disk.
     expect(readFileSync(dbPath).equals(before)).toBe(true);
     expect(backups()).toEqual([]);
+  });
+
+  // Windows has no Unix modes (chmod only toggles read-only), so only POSIX can observe this.
+  it.skipIf(process.platform === 'win32')('creates the backup owner-only, before a single page is copied into it', async () => {
+    let modeBeforeProtect: number | null = null;
+    const r = await scrubDatabase(dbPath, {
+      apply: true,
+      // Observes the file as db.backup left it, before the chmod would mask a world-readable window.
+      protectBackup: async (path) => {
+        modeBeforeProtect = statSync(path).mode & 0o777;
+      },
+    });
+
+    expect(r.backupPath).not.toBeNull();
+    expect(modeBeforeProtect).toBe(0o600);
   });
 
   it('still purges on-disk remnants when re-embedding fails', async () => {

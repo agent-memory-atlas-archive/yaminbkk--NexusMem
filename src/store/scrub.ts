@@ -1,4 +1,4 @@
-import { chmod, readdir, rm } from 'node:fs/promises';
+import { chmod, open, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { redact, type RedactProfile } from '../conversation/redact.js';
@@ -212,6 +212,10 @@ export async function scrubDatabase(dbPath: string, opts: ScrubOptions): Promise
     if (first.rows.length + first.reasons.length > 0) {
       const stamp = (opts.now ?? new Date()).toISOString().replace(/[:.]/g, '-');
       backupPath = `${dbPath}.backup-${stamp}-pre-scrub-secrets`;
+      // SQLite creates a new backup file 0644 under a usual umask, readable by others until the
+      // chmod below. An existing file keeps its mode, so create it owner-only first; `wx` also
+      // refuses to write the copy through anything already at that path.
+      await (await open(backupPath, 'wx', 0o600)).close();
       await db.backup(backupPath);
       // The backup holds every secret this run is about to remove. If it cannot be
       // restricted, stop before touching the database: leaving an unprotected copy
