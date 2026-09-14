@@ -596,7 +596,7 @@ describe('nexusmem agent recall (CLI)', () => {
         cwd: dir,
         hook_event_name: 'PostToolUse',
         tool_name: 'Bash',
-        tool_input: { command: 'npm test' },
+        tool_input: { command: 'npm test; echo "EXIT:$?"' },
         tool_response: { stdout: 'AssertionError: expected 1 to be 2\nEXIT:1', stderr: '', interrupted: false },
         tool_use_id: 'toolu_exitrecovered',
       }),
@@ -615,9 +615,28 @@ describe('nexusmem agent recall (CLI)', () => {
         cwd: dir,
         hook_event_name: 'PostToolUse',
         tool_name: 'Bash',
-        tool_input: { command: 'npm test' },
+        tool_input: { command: 'npm test; echo "EXIT:$?"' },
         tool_response: { stdout: 'ok\nEXIT:0', stderr: '', interrupted: false },
         tool_use_id: 'toolu_exitzero',
+      }),
+      out: (c) => miss.push(c),
+    });
+    expect(miss.join('')).toBe('');
+  });
+
+  it('does not recover recall from output alone, when the command never echoed its status', async () => {
+    await seedFailure('npm test');
+
+    const miss: string[] = [];
+    await runAgentRecall({
+      input: JSON.stringify({
+        session_id: `sess-${session}`,
+        cwd: dir,
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'npm test' },
+        tool_response: { stdout: 'summary\nEXIT:1', stderr: '', interrupted: false },
+        tool_use_id: 'toolu_exitunwrapped',
       }),
       out: (c) => miss.push(c),
     });

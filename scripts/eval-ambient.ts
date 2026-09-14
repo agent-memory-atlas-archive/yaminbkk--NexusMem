@@ -276,7 +276,7 @@ function preflightAmbient(scenario: Scenario, repoDir: string, nmHome: string): 
     cwd: repoDir,
     hook_event_name: 'PostToolUse',
     tool_name: 'Bash',
-    tool_input: { command: scenario.command },
+    tool_input: { command: `${scenario.command}; echo "EXIT:$?"` },
     tool_response: { stdout: `${scenario.command} failed\nEXIT:1`, stderr: '', interrupted: false },
     tool_use_id: `toolu_${preflightSessionId}`,
   });

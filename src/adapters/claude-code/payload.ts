@@ -55,11 +55,23 @@ const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFi
  * that text is not alone on its line and uses neither `:` nor `=`. A
  * malformed or missing echo (`EXIT:`, `EXIT:abc`, no such line at all)
  * yields `null`: no evidence, not a guessed zero and not a guessed failure.
+ *
+ * Output alone is never evidence: a program can print `exit: 1` itself. The
+ * command must end with that echo of `$?`, and nothing before it may make
+ * `$?` another command's status -- a pipe (the last stage's), `||` (the
+ * fallback's), or another `;` or line (whatever ran last). `cd x && cmd` is
+ * fine: `$?` is then cmd's status, or cd's own failure.
  */
 const EXIT_ECHO = /^exit\s*[:=]\s*(\d+)\s*$/i;
+const EXIT_WRAPPER = /^([\s\S]*?);\s*echo\s+(?:"exit\s*[:=]\s*\$\?"|exit\s*[:=]\s*\$\?)\s*$/i;
 
-export function recoverExitStatusFromOutput(stdout: string | undefined): number | null {
-  if (!stdout) return null;
+function echoesOwnExitStatus(command: string): boolean {
+  const body = EXIT_WRAPPER.exec(command.trim())?.[1];
+  return body !== undefined && body.trim().length > 0 && !/[|;\r\n]/.test(body);
+}
+
+export function recoverExitStatusFromOutput(command: string, stdout: string | undefined): number | null {
+  if (!stdout || !echoesOwnExitStatus(command)) return null;
   const lines = stdout.split(/\r?\n/).map((l) => l.trim());
   let last = '';
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -173,7 +185,7 @@ export function parseHookPayloadDetailed(rawJson: string, now: string): ParseOut
     // Only checked on the hook's own success path: a failure already carries a
     // real exit code from `error`, and second-guessing a genuine failure would
     // be guessing in the more dangerous direction.
-    const recovered = failed ? null : recoverExitStatusFromOutput(str(p.tool_response?.stdout));
+    const recovered = failed ? null : recoverExitStatusFromOutput(command, str(p.tool_response?.stdout));
     const draft: RawAgentEvent = {
       ...base,
       kind: 'command',

@@ -246,11 +246,16 @@ function verify(scenario: Scenario): string[] {
     if (bareCountAfter !== '2') problems.push(`C: the first project's own recall count was ${bareCountAfter ?? 'absent'} after seeding an unrelated project, expected exactly 2`);
 
     // --- D: an observed Claude-style wrapped outcome is read correctly --
-    const hiddenFail = recall(hiddenExitPayload(dir, scenario.command, `${scenario.command} failed\nEXIT:1`), dir, env);
+    const echoWrapped = `${scenario.command}; echo "EXIT:$?"`;
+    const hiddenFail = recall(hiddenExitPayload(dir, echoWrapped, `${scenario.command} failed\nEXIT:1`), dir, env);
     if (!hiddenFail.includes('failed in this repository before')) problems.push('D: a hidden non-zero exit code ("; echo EXIT:1") was not recognised as a failure');
 
-    const hiddenOk = recall(hiddenExitPayload(dir, scenario.command, 'ok\nEXIT:0'), dir, env);
+    const hiddenOk = recall(hiddenExitPayload(dir, echoWrapped, 'ok\nEXIT:0'), dir, env);
     if (hiddenOk !== '') problems.push('D: a genuine "EXIT:0" was incorrectly treated as a failure');
+
+    // Output alone is not evidence: the same "EXIT:1" from a command that never echoed $? stays silent.
+    const unwrapped = recall(hiddenExitPayload(dir, scenario.command, 'summary\nEXIT:1'), dir, env);
+    if (unwrapped !== '') problems.push('D: "EXIT:1" in the output of an unwrapped command was treated as a failure');
 
     // A pipeline with no recoverable status: must stay silent (the hook's own
     // "ok"), never guessed as a failure -- the one gap this fix does not close.
