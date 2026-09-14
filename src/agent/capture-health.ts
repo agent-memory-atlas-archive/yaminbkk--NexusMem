@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { globalWorkspaceDir } from '../config/paths.js';
 import { agentEventLogPath } from './paths.js';
 import { parseAgentEventLine } from './record.js';
@@ -86,6 +86,8 @@ export function recordCaptureDrop(
     const safeFamily: DropFamily = isDropFamily(family) ? family : 'other';
     const previous = readDropState(path);
     const drops = typeof previous.drops === 'number' && Number.isFinite(previous.drops) ? previous.drops : 0;
+    // A drop can be the first thing the hook ever writes, before anything has created the directory.
+    mkdirSync(dirname(path), { recursive: true });
     writeFileSync(
       path,
       JSON.stringify({ lastDropAt: now.toISOString(), lastDropReason: safeReason, lastDropFamily: safeFamily, drops: drops + 1 }),
