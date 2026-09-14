@@ -26,7 +26,8 @@ interface Rule {
   render?: (groups: readonly string[]) => string;
 }
 
-const MARK = '[redacted]';
+export const REDACTION_MARK = '[redacted]';
+const MARK = REDACTION_MARK;
 // Every rule refuses to re-match its own marker, so redacting twice changes nothing.
 const NOT_MARK = String.raw`(?!\[redacted\])`;
 const keepPrefix = (groups: readonly string[]): string => `${groups[0]}${MARK}`;

@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { REDACTION_MARK } from '../conversation/redact.js';
 import { significantTokens } from '../store/fts.js';
 import type { MemoryStore } from '../store/store.js';
 
@@ -98,6 +99,8 @@ interface FailureRow {
   id: string;
   ts_epoch: number;
   command: string | null;
+  /** Hash of the raw, pre-redaction command; absent on rows written before it was recorded. */
+  command_hash: string | null;
   cwd: string | null;
   source: string | null;
 }
@@ -194,7 +197,8 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
 
   const failures = db
     .prepare(
-      `SELECT id, ts_epoch, source, json_extract(meta, '$.command') AS command, json_extract(meta, '$.cwd') AS cwd
+      `SELECT id, ts_epoch, source, json_extract(meta, '$.command') AS command,
+              json_extract(meta, '$.commandHash') AS command_hash, json_extract(meta, '$.cwd') AS cwd
        FROM nodes
        WHERE project_id = ? AND kind = 'shell_command'
          AND source_ts IS NOT NULL
@@ -215,6 +219,7 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
        AND n.ts_epoch > ? AND n.ts_epoch <= ?
        AND lower(trim(json_extract(n.meta, '$.command'))) = ?
        AND (json_extract(n.meta, '$.cwd') IS ? OR json_extract(n.meta, '$.cwd') = ?)
+       AND (? IS NULL OR json_extract(n.meta, '$.commandHash') = ?)
      ORDER BY n.ts_epoch ASC LIMIT 1`,
   );
 
@@ -234,14 +239,23 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
   for (const failure of failures) {
     if (!failure.command) continue;
 
-    const retry = findRetry.get(
-      projectId,
-      failure.ts_epoch,
-      failure.ts_epoch + retryWindowMs,
-      normalizeCommand(failure.command),
-      failure.cwd,
-      failure.cwd,
-    ) as RetryRow | undefined;
+    // Redaction can make different raw commands (TOKEN=a cmd, TOKEN=b cmd) store identical text,
+    // so a redacted command must also match on the raw-command hash; without one it is ambiguous.
+    const redacted = failure.command.includes(REDACTION_MARK);
+    const requiredHash = redacted ? failure.command_hash : null;
+    const retry =
+      redacted && !requiredHash
+        ? undefined
+        : (findRetry.get(
+            projectId,
+            failure.ts_epoch,
+            failure.ts_epoch + retryWindowMs,
+            normalizeCommand(failure.command),
+            failure.cwd,
+            failure.cwd,
+            requiredHash,
+            requiredHash,
+          ) as RetryRow | undefined);
     if (retry) {
       // An attempt is files changed + execution + result. For agent-recorded
       // runs all three are known, so an identical command that suddenly passes
