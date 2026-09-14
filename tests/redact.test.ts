@@ -252,6 +252,33 @@ describe('redact: values that used to end the match early', () => {
     expect(redact(text)).toEqual({ text, redactedCount: 0 });
   });
 
+  const LONG = `${'Z'.repeat(600)}-TAIL`;
+  const BT = String.fromCharCode(96);
+  it.each([
+    ['double-quoted key/value', `export DB_PASSWORD="${LONG}"`],
+    ['single-quoted key/value', `DB_PASSWORD='${LONG}'`],
+    ['backtick key/value', `DB_PASSWORD=${BT}${LONG}${BT}`],
+    ['secret option', `app --password "${LONG}" --verbose`],
+    ['bearer option', `curl --oauth2-bearer '${LONG}' https://api.example.com`],
+    ['mysql', `mysql -uroot -p"${LONG}" app`],
+    ['sshpass', `sshpass -p "${LONG}" ssh host`],
+    ['mongo', `mongosh -p "${LONG}" admin`],
+    ['redis-cli', `redis-cli -a '${LONG}' ping`],
+    ['unterminated double quote', 'export DB_PASSWORD="pass-TAIL'],
+    ['unterminated single quote', "app --password 'pass-TAIL"],
+  ])('fails closed on a %s value its bounded quote cannot close', (_label, input) => {
+    const { text } = redact(input);
+
+    expect(text).not.toContain('TAIL');
+    expect(text).toContain('[redacted]');
+    expect(redact(text)).toEqual({ text, redactedCount: 0 });
+  });
+
+  it('keeps the bounded match for an ordinary quoted value, and leaves an empty one alone', () => {
+    expect(redact('app --password "hunter2" --verbose').text).toBe('app --password [redacted] --verbose');
+    expect(redact('DB_PASSWORD="" npm start')).toEqual({ text: 'DB_PASSWORD="" npm start', redactedCount: 0 });
+  });
+
   it('still redacts the unquoted curl form, and leaves an ordinary curl alone', () => {
     expect(redact('curl -u alice:passwordvalue https://api.example.com').text).not.toContain('passwordvalue');
     expect(redact('curl -X POST https://api.example.com/v1/items')).toEqual({

@@ -40,9 +40,10 @@ const SECRET_KEY = String.raw`(?:[A-Za-z0-9_.-]{0,100}?${SECRET_KEYWORD}|(?:-{1,
 // Type annotations (`password: string`) are not values; everything else is hidden, however short.
 const TYPE_WORD = String.raw`(?:string|number|boolean|bool|int|str|null|undefined|none|nil|true|false|any|unknown|object)(?=[\s;,)|\]}>]|$)`;
 // A quoted value runs to its *closing* quote: an escaped quote inside it (--password "pa\"ss")
-// must not end the match, or the tail after it survives redaction. Bounded so a runaway quote
-// cannot walk the whole line.
-const SECRET_VALUE = String.raw`(?:"(?:\\.|[^"\\\r\n]){1,500}"|'(?:\\.|[^'\\\r\n]){1,500}'|\x60(?:\\.|[^\x60\\\r\n]){1,500}\x60|[^\s'"\x60]+)`;
+// must not end the match, or the tail after it survives redaction. Bounded so an ordinary value
+// stops at its own quote; one the bound cannot close (over 500 chars, or never closed) fails
+// closed and takes the rest of the line rather than none of it.
+const SECRET_VALUE = String.raw`(?:"(?:\\.|[^"\\\r\n]){1,500}"|'(?:\\.|[^'\\\r\n]){1,500}'|\x60(?:\\.|[^\x60\\\r\n]){1,500}\x60|"(?!")[^\r\n]+|'(?!')[^\r\n]+|\x60(?!\x60)[^\r\n]+|[^\s'"\x60]+)`;
 // The rest of one shell command: stops at a pipe, `;`, `&` or newline so a tool name never reaches into the next command.
 const SAME_COMMAND = String.raw`[^\n|;&]{0,500}?`;
 // A next argument that is a flag or a redirection is not a value.
