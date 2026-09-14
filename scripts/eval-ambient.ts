@@ -21,6 +21,17 @@ import { revertsDayOneFix, SCENARIOS, type Scenario } from '../eval/ambient/scen
  * the model. The task never mentions memory, and every arm is isolated from
  * this machine's own MCP servers and settings.
  *
+ * What the `mcp` arm has measured so far, recorded here because it is a
+ * finding rather than a bug: **0 `mcp__nexusmem__*` calls across all 18
+ * trials that had the tools available** -- the 9 mcp runs and the 9 ambient
+ * runs, which can reach them too. `preflightMcp` speaks the protocol to the
+ * server before every mcp trial, so that is model behaviour and not a dead
+ * server, and the session digest's own closing line points at the tools
+ * explicitly. The arm is deliberately NOT being fixed by prompting the model
+ * into calling them: that would measure the prompt, not the product. An MCP
+ * tool an agent never chooses to call is a capability, not a memory system,
+ * which is the case for ambient injection being the primary path.
+ *
  * Scoring is mechanical and read from the session transcript: which files were
  * edited and in what order, how many tool calls, how many of them failed, when
  * the fix was reached, and what NexusMem put into the context. Model behaviour
