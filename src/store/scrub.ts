@@ -71,6 +71,8 @@ export interface ScrubOptions {
    * be tested; production always uses chmod.
    */
   protectBackup?: (path: string) => Promise<void>;
+  /** Removes an unprotectable backup. Injectable for the same reason; production uses rm. */
+  removeBackup?: (path: string) => Promise<void>;
 }
 
 export class ScrubRaceError extends Error {}
@@ -224,10 +226,18 @@ export async function scrubDatabase(dbPath: string, opts: ScrubOptions): Promise
       try {
         await (opts.protectBackup ?? ((path: string) => chmod(path, 0o600)))(backupPath);
       } catch (err) {
-        await rm(backupPath, { force: true }).catch(() => {});
-        throw new ScrubBackupError(
-          `could not restrict permissions on the backup (${(err as Error).message}) -- nothing was scrubbed`,
-        );
+        const protectMessage = (err as Error).message;
+        try {
+          await (opts.removeBackup ?? ((path: string) => rm(path, { force: true })))(backupPath);
+        } catch (cleanupErr) {
+          // The unprotected copy is still on disk: say exactly where, so it can be deleted by hand.
+          throw new ScrubBackupError(
+            `could not restrict permissions on the backup (${protectMessage}) nor remove it ` +
+              `(${(cleanupErr as Error).message}) -- nothing was scrubbed, but ${backupPath} still holds the ` +
+              'unredacted data; delete it',
+          );
+        }
+        throw new ScrubBackupError(`could not restrict permissions on the backup (${protectMessage}) -- nothing was scrubbed`);
       }
     }
 

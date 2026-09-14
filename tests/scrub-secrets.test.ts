@@ -144,6 +144,26 @@ describe('scrubDatabase', () => {
     expect(backups()).toEqual([]);
   });
 
+  it('names the copy it could neither protect nor remove, so it can be deleted by hand', async () => {
+    const before = readFileSync(dbPath);
+
+    const err = await scrubDatabase(dbPath, {
+      apply: true,
+      protectBackup: () => Promise.reject(new Error('EPERM: chmod refused')),
+      removeBackup: () => Promise.reject(new Error('EBUSY: resource busy')),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ScrubBackupError);
+    const [left] = backups();
+    expect(left).toBeDefined();
+    const message = (err as Error).message;
+    expect(message).toContain(join(dir, left!));
+    expect(message).toContain('EPERM: chmod refused');
+    expect(message).toContain('EBUSY: resource busy');
+    expect(message).not.toContain(SECRET);
+    expect(readFileSync(dbPath).equals(before)).toBe(true);
+  });
+
   // Windows has no Unix modes (chmod only toggles read-only), so only POSIX can observe this.
   it.skipIf(process.platform === 'win32')('creates the backup owner-only, before a single page is copied into it', async () => {
     let modeBeforeProtect: number | null = null;
