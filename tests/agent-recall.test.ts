@@ -8,6 +8,7 @@ import { markInjected, MAX_INJECTIONS_PER_SESSION, shouldInject } from '../src/a
 import { collectAgentEvents } from '../src/collectors/agent-events.js';
 import { correlateFailures, RESOLVED_BY_DISCUSSION } from '../src/correlate/failure-fix.js';
 import { sha256Hex } from '../src/core/ids.js';
+import type { MemoryNode } from '../src/core/types.js';
 import { MemoryStore } from '../src/store/store.js';
 
 const PROJECT = 'proj-recall';
@@ -341,5 +342,158 @@ describe('recall quota', () => {
 
   it('treats a missing or corrupt state file as an empty one', () => {
     expect(shouldInject('s1', 'hash-a', join(dir, 'nope.json'))).toBe(true);
+  });
+});
+
+/**
+ * The Phase-5 eval's `stale-fix` scenario measured this exactly: every
+ * ambient trial was told `node check.js` was "fixed on <date>" while the
+ * repository's own history had already reverted that fix. The evidence to
+ * know better was there -- a `revert:` commit touching the file the fix
+ * edited -- and nothing looked at it.
+ *
+ * The rule is deliberately narrow. A revert must SAY it is a revert and
+ * TOUCH a file the fix edited. Anything weaker (a later commit that happens
+ * to touch the file, a refactor that silently undoes the change) leaves the
+ * chain resolved, because staleness that cannot be proven is not invented.
+ */
+describe('a fix that git later reverted', () => {
+  const NOW = new Date(Date.parse('2026-09-04T12:00:00.000Z'));
+
+  const commit = (id: string, title: string, minutes: number, files: string[]): MemoryNode => ({
+    id,
+    kind: 'git_commit',
+    projectId: PROJECT,
+    ts: at(minutes),
+    source: 'git',
+    title,
+    body: title,
+    files: files.map((path) => ({ path, insertions: null, deletions: null, binary: false })),
+    signal: 0.5,
+    meta: {},
+  });
+
+  /** seedDayOne's fix passes at at(21) after editing src/c.ts. */
+  const revertOfTheFix = () => commit('c-rv', 'revert: c.ts broke the other suite', 60, ['src/c.ts']);
+
+  it('digest: still says "fixed" when nothing reverted it', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.resolved).toBe(1);
+    expect(digest.superseded).toBe(0);
+    expect(digest.text).not.toContain('no longer holds');
+  });
+
+  it('digest: says the fix was reverted instead of claiming it holds', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+    store.upsertNodes([revertOfTheFix()]);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.superseded).toBe(1);
+    expect(digest.resolved).toBe(0);
+    expect(digest.text).toContain('no longer holds');
+    expect(digest.text).toContain('reverted');
+  });
+
+  it('recall: reports the fix as history and warns it was backed out', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+    store.upsertNodes([revertOfTheFix()]);
+
+    const recall = recallFailure(store, PROJECT, HASH('npm test'))!;
+    expect(recall.superseded).toBe(true);
+    expect(recall.resolved).toBe(false);
+    // What was tried is still named -- dropping it would lose the most
+    // actionable fact -- but it is no longer offered as today's answer.
+    expect(recall.text).toContain('src/c.ts');
+    expect(recall.text).toContain('reverted on');
+    expect(recall.text).toContain('unlikely to work');
+    expect(recall.text).not.toContain('Check what changed in that fix before retrying');
+  });
+
+  it('a revert touching an unrelated file leaves the chain resolved', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+    store.upsertNodes([commit('o-rv', 'revert: unrelated change', 60, ['src/elsewhere.ts'])]);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.resolved).toBe(1);
+    expect(digest.superseded).toBe(0);
+    expect(recallFailure(store, PROJECT, HASH('npm test'))!.superseded).toBe(false);
+  });
+
+  it('a revert that predates the fix is not evidence against it', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+    // Same file, same wording -- only the order differs, and order is the
+    // whole claim: a revert before the fix was reverted something else.
+    store.upsertNodes([commit('early-rv', 'revert: an earlier attempt at c.ts', 5, ['src/c.ts'])]);
+
+    expect(recallSessionStart(store, PROJECT, NOW)!.resolved).toBe(1);
+    expect(recallFailure(store, PROJECT, HASH('npm test'))!.superseded).toBe(false);
+  });
+
+  it('a commit that merely mentions reverting is not a revert', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+    store.upsertNodes([commit('n-rv', 'reverting is not what this does, it extends c.ts', 60, ['src/c.ts'])]);
+
+    expect(recallSessionStart(store, PROJECT, NOW)!.resolved).toBe(1);
+  });
+
+  it('accepts git\'s own generated revert subject', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+    store.upsertNodes([commit('g-rv', 'Revert "fix: rework c.ts"', 60, ['src/c.ts'])]);
+
+    expect(recallSessionStart(store, PROJECT, NOW)!.superseded).toBe(1);
+  });
+
+  it('uncertain evidence stays uncertain: a discussion link never becomes fixed or reverted', () => {
+    const command = 'npm test';
+    store.upsertNodes(collectAgentEvents([event({ command, ts: at(0) })], PROJECT, { repoRoot: ROOT }));
+    const [failure] = store.raw.prepare(`SELECT id FROM nodes WHERE project_id = ? AND kind = 'shell_command'`).all(PROJECT) as Array<{ id: string }>;
+    store.upsertNodes([
+      {
+        id: 'turn-1',
+        kind: 'conversation_turn',
+        projectId: PROJECT,
+        ts: at(5),
+        source: 'conversation:claude-code',
+        title: 'about npm test',
+        body: 'we talked about npm test',
+        files: [],
+        signal: 0.5,
+        meta: {},
+      },
+    ]);
+    store.linkNodes(failure!.id, 'turn-1', RESOLVED_BY_DISCUSSION);
+    store.upsertNodes([commit('u-rv', 'revert: something', 60, ['src/a.ts'])]);
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.uncertain).toBe(1);
+    expect(digest.superseded).toBe(0);
+    expect(digest.resolved).toBe(0);
+    expect(digest.text).not.toContain('fixed');
+  });
+
+  it('stays inside the digest budget with a superseded chain', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+    store.upsertNodes([revertOfTheFix()]);
+    store.upsertNodes(
+      collectAgentEvents(
+        ['cargo build', 'go test', 'make lint'].map((command, i) => event({ command, ts: at(30 + i) })),
+        PROJECT,
+        { repoRoot: ROOT },
+      ),
+    );
+
+    const digest = recallSessionStart(store, PROJECT, NOW)!;
+    expect(digest.text.length).toBeLessThanOrEqual(MAX_DIGEST_CHARS);
+    expect(recallFailure(store, PROJECT, HASH('npm test'))!.text.length).toBeLessThanOrEqual(MAX_RECALL_CHARS);
   });
 });

@@ -31,6 +31,8 @@ export interface FailureRecall {
   /** How many past failures backed this, for the eval and for `--json`. */
   matched: number;
   resolved: boolean;
+  /** The fix exists but a later revert undid it, so it is not today's answer. */
+  superseded: boolean;
 }
 
 const SELECT_BY_HASH = `
@@ -62,6 +64,42 @@ const SELECT_BY_ID = `
          (SELECT group_concat(f.path) FROM node_files f WHERE f.node_id = n.id) AS paths
   FROM nodes n WHERE n.id = ?`;
 
+/**
+ * Conventional `revert: ...` / `revert(scope): ...`, and git's own
+ * `Revert "..."`. Nothing looser: in the Phase-5 fixtures a plain
+ * `refactor(parse): simplify config mapping` also undid a fix, but its
+ * message claims no such thing, and reading intent out of a diff is not
+ * evidence this function has. An unprovable staleness stays unclaimed.
+ */
+const REVERT_SUBJECT = /^revert(\([^)]*\))?[:!]|^revert\s+"/i;
+
+/**
+ * A later commit that says it is a revert and touches a file the fix edited.
+ * Both halves are required: the message alone could be reverting anything,
+ * and a later commit touching the same file is ordinary work, not a reversal.
+ * A fix with no recorded files can never satisfy this, so it stays resolved --
+ * absence of evidence is not evidence of staleness.
+ */
+const SELECT_REVERT_OF = `
+  SELECT n.ts, n.title
+  FROM nodes n
+  WHERE n.project_id = ?
+    AND n.kind = 'git_commit'
+    AND n.title LIKE 'revert%'
+    AND n.ts_epoch > (SELECT ts_epoch FROM nodes WHERE id = ?)
+    AND EXISTS (
+      SELECT 1 FROM node_files a
+      JOIN node_files b ON b.path = a.path
+      WHERE a.node_id = n.id AND b.node_id = ?
+    )
+  ORDER BY n.ts_epoch ASC
+  LIMIT 3`;
+
+function revertOfFix(store: MemoryStore, projectId: string, fixId: string): { ts: string; title: string } | null {
+  const rows = store.raw.prepare(SELECT_REVERT_OF).all(projectId, fixId, fixId) as Array<{ ts: string; title: string }>;
+  return rows.find((row) => REVERT_SUBJECT.test(row.title)) ?? null;
+}
+
 const day = (ts: string): string => ts.slice(0, 10);
 const files = (row: NodeRow): string => (row.paths ? row.paths.split(',').join(', ') : '');
 
@@ -82,6 +120,7 @@ export function recallFailure(store: MemoryStore, projectId: string, execHash: s
 
   const lines: string[] = [];
   let resolved = false;
+  let superseded = false;
 
   // Newest first is what the agent needs: the most recent attempt is the one it is about to repeat.
   for (const row of past) {
@@ -94,19 +133,25 @@ export function recallFailure(store: MemoryStore, projectId: string, execHash: s
     const fix = db.prepare(SELECT_BY_ID).get(fixId) as NodeRow | undefined;
     if (!fix) continue;
     const changed = files(fix);
-    lines.push(changed ? `- fixed on ${day(fix.ts)} after editing ${changed}` : `- fixed on ${day(fix.ts)}`);
-    resolved = true;
+    const what = changed ? `fixed on ${day(fix.ts)} after editing ${changed}` : `fixed on ${day(fix.ts)}`;
+    // What was tried is still worth saying -- it is the most actionable thing
+    // here -- but it is said as history, not as today's answer, the moment
+    // there is evidence it was undone.
+    const revert = revertOfFix(store, projectId, fixId);
+    lines.push(revert ? `- ${what}, but that fix was reverted on ${day(revert.ts)} -- it no longer holds` : `- ${what}`);
+    resolved = !revert;
+    superseded = Boolean(revert);
     break;
   }
 
-  if (!resolved) lines.push('- no fix for it was ever recorded here');
+  if (!resolved && !superseded) lines.push('- no fix for it was ever recorded here');
 
   const header = `NexusMem: this exact command has failed in this repository before (${past.length} time(s)).`;
-  const footer = resolved
-    ? 'Check what changed in that fix before retrying the same approach.'
-    : 'Previous attempts did not resolve it, so a different approach is likely needed.';
+  let footer = 'Previous attempts did not resolve it, so a different approach is likely needed.';
+  if (resolved) footer = 'Check what changed in that fix before retrying the same approach.';
+  if (superseded) footer = 'That fix was reverted, so repeating it is unlikely to work -- check why it was backed out.';
 
-  return { text: [header, ...lines, footer].join('\n').slice(0, MAX_RECALL_CHARS), matched: past.length, resolved };
+  return { text: [header, ...lines, footer].join('\n').slice(0, MAX_RECALL_CHARS), matched: past.length, resolved, superseded };
 }
 
 /** ~150 tokens. A session opener has to be cheap enough that nobody would turn it off. */
@@ -119,23 +164,26 @@ export interface SessionDigest {
   /** Counts by state, for the eval and for `--json`. */
   resolved: number;
   stale: number;
+  superseded: number;
   uncertain: number;
   unresolved: number;
 }
 
-type CommandState = 'resolved' | 'stale' | 'uncertain' | 'unresolved';
+type CommandState = 'resolved' | 'stale' | 'superseded' | 'uncertain' | 'unresolved';
 
 interface CommandSummary {
   command: string;
   /** This command's most recent failure in the window. */
   newestTs: string;
   state: CommandState;
-  /** When state is 'resolved' or 'stale': when the (possibly no-longer-holding) fix landed. */
+  /** When state is 'resolved', 'stale' or 'superseded': when the (possibly no-longer-holding) fix landed. */
   fixTs?: string;
+  /** When state is 'superseded': when the revert that undid that fix landed. */
+  revertTs?: string;
 }
 
 /** Resolved chains are shown first regardless of recency -- see the doc comment below. */
-const STATE_PRIORITY: Record<CommandState, number> = { resolved: 0, stale: 1, uncertain: 2, unresolved: 3 };
+const STATE_PRIORITY: Record<CommandState, number> = { resolved: 0, stale: 1, superseded: 2, uncertain: 3, unresolved: 4 };
 
 /**
  * What is worth knowing when a session opens.
@@ -150,9 +198,14 @@ const STATE_PRIORITY: Record<CommandState, number> = { resolved: 0, stale: 1, un
  * Per command, only the MOST RECENT occurrence in the window decides the
  * state: if it has a `resolved_by:retry` link, the chain is 'resolved' -- the
  * one heuristic dogfooding found correct on every manually-checked link (see
- * correlate/failure-fix.ts). If it does not but an OLDER occurrence of the
- * exact same command did, that fix has since stopped holding -- said as
- * 'stale', not silently dropped and not repeated as if it still applied. If
+ * correlate/failure-fix.ts) -- unless git shows that fix was later reverted,
+ * which makes it 'superseded'. The Phase-5 eval measured the cost of not
+ * having that check: every ambient trial of the `stale-fix` scenario was told
+ * a fix was in place on a date when the repository's own history had already
+ * backed it out. If the newest occurrence has no retry link but an OLDER
+ * occurrence of the exact same command did, that fix has since stopped
+ * holding -- said as 'stale', not silently dropped and not repeated as if it
+ * still applied. If
  * the newest occurrence instead has only a `resolved_by:discussion` link --
  * the other heuristic, measured roughly half wrong when dogfooded -- it is
  * 'uncertain': named, but never worded as "fixed", because that evidence does
@@ -184,7 +237,12 @@ export function recallSessionStart(store: MemoryStore, projectId: string, now = 
     const [newestFixId] = store.getLinkedNodeIds(newest!.id, RESOLVED_BY_RETRY);
     if (newestFixId) {
       const fix = store.raw.prepare(SELECT_BY_ID).get(newestFixId) as NodeRow | undefined;
-      summaries.push({ command, newestTs: newest!.ts, state: 'resolved', fixTs: fix?.ts });
+      const revert = revertOfFix(store, projectId, newestFixId);
+      summaries.push(
+        revert
+          ? { command, newestTs: newest!.ts, state: 'superseded', fixTs: fix?.ts, revertTs: revert.ts }
+          : { command, newestTs: newest!.ts, state: 'resolved', fixTs: fix?.ts },
+      );
       continue;
     }
     const staleFixId = older.map((row) => store.getLinkedNodeIds(row.id, RESOLVED_BY_RETRY)[0]).find((id): id is string => id !== undefined);
@@ -212,6 +270,9 @@ export function recallSessionStart(store: MemoryStore, projectId: string, now = 
     if (s.state === 'stale') {
       return `- ${s.command} (fixed ${day(s.fixTs!)}, but failed again ${day(s.newestTs)} -- that fix no longer holds)`;
     }
+    if (s.state === 'superseded') {
+      return `- ${s.command} (fixed ${day(s.fixTs!)}, but that fix was reverted ${day(s.revertTs!)} -- it no longer holds)`;
+    }
     if (s.state === 'uncertain') {
       return `- ${s.command} failed ${day(s.newestTs)} -- possibly discussed around ${day(s.fixTs!)}, not confirmed as a fix`;
     }
@@ -219,7 +280,7 @@ export function recallSessionStart(store: MemoryStore, projectId: string, now = 
   });
   const more = summaries.length > listed.length ? ` and ${summaries.length - listed.length} other(s)` : '';
 
-  const counts = { resolved: 0, stale: 0, uncertain: 0, unresolved: 0 };
+  const counts = { resolved: 0, stale: 0, superseded: 0, uncertain: 0, unresolved: 0 };
   for (const s of summaries) counts[s.state] += 1;
 
   return {
