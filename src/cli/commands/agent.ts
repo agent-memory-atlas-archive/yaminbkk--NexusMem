@@ -106,6 +106,10 @@ export async function runAgentInstall(opts: AgentCommandOptions): Promise<number
   return 0;
 }
 
+/** Settings files are untrusted: show a C0/C1 control character as `\xNN` rather than letting it drive the terminal. */
+const printablePath = (path: string): string =>
+  path.replace(/[\x00-\x1f\x7f-\x9f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+
 /** npm's own name for the directory `npx` unpacks a package into, on every platform. */
 function isNpxCacheInstall(command: string): boolean {
   return hookCommandPaths(command).some((p) => /[\\/]_npx[\\/]/.test(p));
@@ -165,7 +169,7 @@ export async function runAgentStatus(opts: AgentCommandOptions): Promise<number>
       ...(missing.length > 0
         ? [
             `${pc.dim('paths     ')} ${pc.yellow(`${missing.length} path(s) in the installed hook do not exist here`)}`,
-            ...missing.map((p) => `${pc.dim('          ')} ${p}`),
+            ...missing.map((p) => `${pc.dim('          ')} ${printablePath(p)}`),
             `${pc.dim('          ')} ${pc.dim('reinstall from the environment Claude Code runs in')}`,
           ]
         : []),

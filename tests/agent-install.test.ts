@@ -392,6 +392,33 @@ describe('nexusmem agent (CLI)', () => {
       expect(text).toContain('reinstall from the environment Claude Code runs in');
     });
 
+    it('escapes terminal control characters a settings file puts in a hook path, instead of printing them', async () => {
+      // A cloned repository's project settings are untrusted: ESC and BEL sequences can retitle or clear the terminal.
+      const ESC = String.fromCharCode(27);
+      const BEL = String.fromCharCode(7);
+      const path = join(dir, '.claude', 'settings.local.json');
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(
+        path,
+        JSON.stringify({
+          hooks: {
+            PostToolUse: [
+              {
+                matcher: 'Bash',
+                hooks: [{ type: 'command', command: `"/nexusmem-elsewhere/${ESC}]0;pwned${BEL}${ESC}[2Jnode" "/nexusmem-elsewhere/dist/cli/agent-hook.js"` }],
+              },
+            ],
+          },
+        }),
+      );
+
+      const text = await status();
+      expect(text).toContain('2 path(s) in the installed hook do not exist here');
+      expect(text).not.toContain(ESC);
+      expect(text).not.toContain(BEL);
+      expect(text).toContain('/nexusmem-elsewhere/\\x1b]0;pwned\\x07\\x1b[2Jnode');
+    });
+
     it('says nothing about paths for an install whose paths are all here', async () => {
       await runAgentInstall({ cwd: dir, scope: 'project', out: () => {} });
 
