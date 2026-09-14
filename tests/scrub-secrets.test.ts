@@ -193,7 +193,26 @@ describe('scrubDatabase', () => {
     expect(r.remnantsPurged).toBe(true);
     expect(onDisk(dbPath, SECRET)).toBe(false);
     expect(r.reembedded).toBe(0);
-    expect(r.embeddingsPending).toBe(r.embeddingsDropped);
+    expect(r.embeddingsPending).toBe(withStore(dbPath, (store) => store.countNodesNeedingEmbedding(P)));
+  });
+
+  it('reports pending embeddings as the database counts them when re-embedding fails with a backlog', async () => {
+    withStore(dbPath, (store) =>
+      store.upsertNodes(
+        [1, 2, 3].map((n) => node({ id: `backlog-${n}`, kind: 'note', source: 'x', title: `note ${n}`, body: `unrelated note ${n}` })),
+      ),
+    );
+    const failing = {
+      id: 'failing-provider',
+      dimensions: EMBEDDING_DIM,
+      embed: () => Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1:11434')),
+    };
+
+    const r = await scrubDatabase(dbPath, { apply: true, embeddingProvider: failing as never });
+
+    expect(r.embeddingsDropped).toBe(4);
+    // Not dropped minus re-embedded: a provider change can invalidate other vectors before it fails.
+    expect(r.embeddingsPending).toBe(withStore(dbPath, (store) => store.countNodesNeedingEmbedding(P)));
   });
 
   it('re-embedding drains the project backlog too, and says so instead of clamping the count', async () => {
