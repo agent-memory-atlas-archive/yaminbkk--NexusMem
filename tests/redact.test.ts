@@ -240,6 +240,18 @@ describe('redact: values that used to end the match early', () => {
     expect(text).toContain('alice:');
   });
 
+  it.each([
+    ['double-quoted password', `curl -u "alice:pa${BS}"ss-TAIL" https://api.example.com`],
+    ['single-quoted password', `curl -u 'alice:pa${BS}'ss-TAIL' https://api.example.com`],
+    ['double-quoted user name', `curl -u "al${BS}"ice:pass-TAIL" https://api.example.com`],
+  ])('redacts through an escaped quote in a %s of a curl credential', (_label, input) => {
+    const { text } = redact(input);
+
+    expect(text).not.toContain('TAIL');
+    expect(text).toContain('[redacted]');
+    expect(redact(text)).toEqual({ text, redactedCount: 0 });
+  });
+
   it('still redacts the unquoted curl form, and leaves an ordinary curl alone', () => {
     expect(redact('curl -u alice:passwordvalue https://api.example.com').text).not.toContain('passwordvalue');
     expect(redact('curl -X POST https://api.example.com/v1/items')).toEqual({

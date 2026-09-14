@@ -131,11 +131,12 @@ const RULES: Rule[] = [
     render: keepPrefix,
   },
   // Quoted credentials get their own branches: `curl -u "user:pass word"` holds a space, which
-  // the unquoted branch would stop at, leaving the rest of the password in the text.
+  // the unquoted branch would stop at, leaving the rest of the password in the text. Like
+  // SECRET_VALUE, they step over escaped characters so `"alice:pa\"ss"` is not cut at `\"`.
   {
     name: 'curl-user-password',
     pattern: new RegExp(
-      String.raw`(${CURL_USER}"[^\s:"]*:)${NOT_MARK}[^"\r\n]*|(${CURL_USER}'[^\s:']*:)${NOT_MARK}[^'\r\n]*|(${CURL_USER}[^\s:'"]*:)${NOT_MARK}[^\s'"]+`,
+      String.raw`(${CURL_USER}"(?:\\.|[^\s:"\\])*:)${NOT_MARK}(?:\\.|[^"\\\r\n])*|(${CURL_USER}'(?:\\.|[^\s:'\\])*:)${NOT_MARK}(?:\\.|[^'\\\r\n])*|(${CURL_USER}[^\s:'"]*:)${NOT_MARK}[^\s'"]+`,
       'g',
     ),
     highConfidence: true,
