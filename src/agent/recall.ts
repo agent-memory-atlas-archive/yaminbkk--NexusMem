@@ -34,6 +34,8 @@ export interface FailureRecall {
   resolved: boolean;
   /** The fix exists but a later revert undid it, so it is not today's answer. */
   superseded: boolean;
+  /** The fix exists and was not reverted, but this execution failed again after it. */
+  stale: boolean;
 }
 
 const SELECT_BY_HASH = `
@@ -122,11 +124,13 @@ export function recallFailure(store: MemoryStore, projectId: string, execHash: s
   const lines: string[] = [];
   let resolved = false;
   let superseded = false;
+  let stale = false;
 
   // Newest first is what the agent needs: the most recent attempt is the one it is about to repeat.
   for (const row of past) {
     lines.push(`- ${describeAttempt(row)}`);
   }
+  const newestFailureTs = past[0]!.ts;
 
   for (const row of past) {
     const [fixId] = store.getLinkedNodeIds(row.id, RESOLVED_BY_RETRY);
@@ -139,20 +143,33 @@ export function recallFailure(store: MemoryStore, projectId: string, execHash: s
     // here -- but it is said as history, not as today's answer, the moment
     // there is evidence it was undone.
     const revert = revertOfFix(store, projectId, fixId);
-    lines.push(revert ? `- ${what}, but that fix was reverted on ${day(revert.ts)} -- it no longer holds` : `- ${what}`);
-    resolved = !revert;
+    // Or the same execution simply failed again after it, which the digest already
+    // reports as a fix that no longer holds. Recall called those same rows "fixed".
+    const failedAgain = !revert && newestFailureTs > fix.ts;
+    if (revert) lines.push(`- ${what}, but that fix was reverted on ${day(revert.ts)} -- it no longer holds`);
+    else if (failedAgain) lines.push(`- ${what}, but it failed again on ${day(newestFailureTs)} -- that fix no longer holds`);
+    else lines.push(`- ${what}`);
     superseded = Boolean(revert);
+    stale = failedAgain;
+    resolved = !revert && !failedAgain;
     break;
   }
 
-  if (!resolved && !superseded) lines.push('- no fix for it was ever recorded here');
+  if (!resolved && !superseded && !stale) lines.push('- no fix for it was ever recorded here');
 
   const header = `NexusMem: this exact command has failed in this repository before (${past.length} time(s)).`;
   let footer = 'Previous attempts did not resolve it, so a different approach is likely needed.';
   if (resolved) footer = 'Check what changed in that fix before retrying the same approach.';
+  if (stale) footer = 'That fix did not hold, so repeating it is unlikely to be enough -- check what changed since.';
   if (superseded) footer = 'That fix was reverted, so repeating it is unlikely to work -- check why it was backed out.';
 
-  return { text: [header, ...lines, footer].join('\n').slice(0, MAX_RECALL_CHARS), matched: past.length, resolved, superseded };
+  return {
+    text: [header, ...lines, footer].join('\n').slice(0, MAX_RECALL_CHARS),
+    matched: past.length,
+    resolved,
+    superseded,
+    stale,
+  };
 }
 
 const displayCommand = (row: NodeRow): string | undefined =>

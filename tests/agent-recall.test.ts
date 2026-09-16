@@ -124,6 +124,43 @@ describe('recallFailure', () => {
     expect(recallFailure(store, PROJECT, HASH(b))).toBeNull();
   });
 
+  it('stops calling a fix current once the same execution failed again after it', () => {
+    // The digest already says "that fix no longer holds" for this evidence; recall
+    // used to answer "fixed ... check what changed in that fix" for the same rows.
+    const command = 'npm test';
+    store.upsertNodes(collectAgentEvents([event({ command, ts: at(0) })], PROJECT, { repoRoot: ROOT }));
+    store.upsertNodes(
+      collectAgentEvents(
+        [
+          event({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(1) }),
+          event({ command, outcome: 'ok', exitCode: 0, ts: at(2) }),
+        ],
+        PROJECT,
+        { repoRoot: ROOT },
+      ),
+    );
+    correlateFailures(store, PROJECT);
+    store.upsertNodes(collectAgentEvents([event({ command, ts: at(30) })], PROJECT, { repoRoot: ROOT }));
+
+    const recall = recallFailure(store, PROJECT, HASH(command))!;
+
+    expect(recall).toMatchObject({ resolved: false, stale: true, superseded: false });
+    expect(recall.text).toContain('failed again');
+    expect(recall.text).toContain('no longer holds');
+    // The attempt itself is still the most actionable history, so it stays named.
+    expect(recall.text).toContain('src/a.ts');
+  });
+
+  it('still reports a fix as current when nothing has failed since it', () => {
+    seedDayOne();
+    correlateFailures(store, PROJECT);
+
+    const recall = recallFailure(store, PROJECT, HASH('npm test'))!;
+
+    expect(recall).toMatchObject({ resolved: true, stale: false, superseded: false });
+    expect(recall.text).toContain('Check what changed in that fix');
+  });
+
   it('backward compatibility: a node written before execHash existed is simply never found by it', () => {
     // Simulates a row from before this field existed: meta has commandHash
     // but no execHash. json_extract on a missing path is SQL NULL, so this
