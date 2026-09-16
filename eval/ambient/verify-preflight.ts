@@ -36,6 +36,10 @@ import { deadEndFiles, revertsDayOneFix, SCENARIOS, type Scenario } from './scen
  *      `export X=1 &&`, a pipeline) does NOT match it
  *   L. a chain this fixture's own git history has reverted is labelled as no
  *      longer holding, and one it has not is left alone
+ *   M. one logical execution is one digest entry, however many spellings of
+ *      it the history holds
+ *   N. a fix the same execution failed again after -- with no revert in git
+ *      -- is reported as no longer holding by both recall and the digest
  *
  *   npm run build && npx tsx eval/ambient/verify-preflight.ts [repeats]
  */
@@ -115,6 +119,40 @@ function buildFixture(scenario: Scenario): Fixture {
   );
   writeFileSync(join(nmHome, 'agent-events.jsonl'), `${events.map((e) => JSON.stringify(e)).join('\n')}\n`);
   run(['sync', '-C', dir, '--no-embed', '--quiet'], { env });
+  return { dir, nmHome };
+}
+
+/**
+ * A third fixture, for M and N only: day 1 fails, a real edit fixes it, and
+ * then the same execution fails again -- in two other spellings Claude
+ * really emits -- with nothing in git reverting anything. Its own workspace,
+ * so the checks above keep reading the history they were written for.
+ */
+function buildFailedAgainProject(scenario: Scenario): Fixture {
+  const workspace = realpathSync.native(mkdtempSync(join(tmpdir(), 'nexusmem-preflight-again-')));
+  const dir = join(workspace, 'app');
+  const nmHome = join(workspace, 'nmhome');
+  scenario.build(dir);
+  mkdirSync(nmHome, { recursive: true });
+  const env = { ...process.env, NEXUSMEM_HOME: nmHome };
+  run(['init', '-C', dir], { env });
+  const configPath = join(dir, '.nexusmem', 'config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8')) as { sources: { shell: { enabled: boolean } } };
+  config.sources.shell.enabled = false;
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+  const minute = (n: number) => new Date(Date.now() - (600 - n) * 60_000).toISOString();
+  const base = { agent: 'claude-code' as const, sessionId: 'failed-again', cwd: dir, durationMs: 5 };
+  const events = [
+    { ...base, eventId: 'fa-1', ts: minute(0), kind: 'command' as const, command: scenario.command, outcome: 'fail' as const, exitCode: 1 },
+    { ...base, eventId: 'fa-2', ts: minute(1), kind: 'edit' as const, filePath: join(dir, scenario.fix.file), outcome: 'ok' as const, exitCode: null },
+    { ...base, eventId: 'fa-3', ts: minute(2), kind: 'command' as const, command: scenario.command, outcome: 'ok' as const, exitCode: 0 },
+    // The same execution, failing again later, spelled the way Claude really spells it.
+    { ...base, eventId: 'fa-4', ts: minute(300), kind: 'command' as const, command: `cd "${dir}" && ${scenario.command}`, outcome: 'fail' as const, exitCode: 1 },
+    { ...base, eventId: 'fa-5', ts: minute(301), kind: 'command' as const, command: `${scenario.command}; echo "exit: $?"`, outcome: 'fail' as const, exitCode: 1 },
+  ].map((e) => redactAgentEvent(e as never));
+  writeFileSync(join(nmHome, 'agent-events.jsonl'), `${events.map((e) => JSON.stringify(e)).join('\n')}\n`);
+  run(['sync', '-C', dir, '--no-embed', '--quiet', '--link-failures'], { env });
   return { dir, nmHome };
 }
 
@@ -203,6 +241,7 @@ function verify(scenario: Scenario): string[] {
   const { dir, nmHome } = buildFixture(scenario);
   const env = { ...process.env, NEXUSMEM_HOME: nmHome };
   let other: Fixture | null = null;
+  let againFixture: Fixture | null = null;
 
   try {
     const errorText = `Exit code 1\n${scenario.command} failed`;
@@ -325,6 +364,22 @@ function verify(scenario: Scenario): string[] {
       if (saysStale(digest)) problems.push('L: the digest claims the fix no longer holds, but git contains no revert of it');
     }
 
+    // --- M + N: one entry per execution, and a fix that stopped holding ---
+    againFixture = buildFailedAgainProject(scenario);
+    const againEnv = { ...process.env, NEXUSMEM_HOME: againFixture.nmHome };
+    const againDigest = sessionStart(againFixture.dir, againEnv);
+    const againEntries = againDigest.split(/\r?\n/).filter((l) => l.trim().startsWith('- '));
+    if (againEntries.length !== 1) {
+      problems.push(`M: three spellings of one execution produced ${againEntries.length} digest entries, expected 1`);
+    }
+    const againRecall = recall(failurePayload(againFixture.dir, scenario.command, errorText), againFixture.dir, againEnv);
+    if (!saysStale(againDigest)) problems.push('N: the digest still presents a fix the same execution failed again after as current');
+    if (!againRecall.includes('failed in this repository before')) {
+      problems.push('N: recall found no history for an execution that failed again');
+    } else if (!saysStale(againRecall)) {
+      problems.push('N: recall still presents a fix the same execution failed again after as current');
+    }
+
     // --- H: token budget -------------------------------------------------
     if (bareRecall.length > 0) {
       const injected = (JSON.parse(bareRecall) as { hookSpecificOutput?: { additionalContext?: string } }).hookSpecificOutput
@@ -344,7 +399,7 @@ function verify(scenario: Scenario): string[] {
     if (deadEndFiles(scenario).some((f) => !f)) problems.push('internal: a scenario declared an empty dead-end file');
   } finally {
     // Best-effort: a lingering handle on Windows must not hide real check results.
-    for (const d of [dir, other?.dir].filter((x): x is string => x !== undefined)) {
+    for (const d of [dir, other?.dir, againFixture?.dir].filter((x): x is string => x !== undefined)) {
       try {
         rmSync(join(d, '..'), { recursive: true, force: true });
       } catch {
