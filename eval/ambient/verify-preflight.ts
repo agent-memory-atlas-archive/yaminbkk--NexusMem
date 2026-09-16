@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { redactAgentEvent } from '../../src/agent/event.js';
@@ -40,10 +40,12 @@ import { deadEndFiles, revertsDayOneFix, SCENARIOS, type Scenario } from './scen
  *      it the history holds
  *   N. a fix the same execution failed again after -- with no revert in git
  *      -- is reported as no longer holding by both recall and the digest
- *   O. the hooks `agent install` writes really run recall on PostToolUse, so a
- *      command wrapped as `; echo "EXIT:$?"` -- which makes Claude Code report
- *      the tool call as a success -- still reaches its history, once, under the
- *      event name that carried it; an ordinary success still says nothing
+ *   O. the hook commands `agent install` writes, run through Claude Code's
+ *      shell: a command wrapped as `; echo "EXIT:$?"` -- which makes Claude
+ *      Code report the tool call as a success -- is captured as the target's
+ *      failure and recalled with A/B/C, once across both events, under the
+ *      event name that carried it; an ordinary success is captured as ok and
+ *      recalls nothing
  *
  *   npm run build && npx tsx eval/ambient/verify-preflight.ts [repeats]
  */
@@ -80,6 +82,68 @@ function sessionStart(cwd: string, env: NodeJS.ProcessEnv): string {
       encoding: 'utf8',
     }).stdout ?? ''
   );
+}
+
+interface InstalledSettings {
+  hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>;
+}
+
+/** The command strings `agent install` wrote for one event, for a Bash tool call. */
+function installedCommands(settings: InstalledSettings, event: string): string[] {
+  return (settings.hooks?.[event] ?? [])
+    .filter((entry) => entry.matcher === undefined || new RegExp(`^(?:${entry.matcher})$`).test('Bash'))
+    .flatMap((entry) => (entry.hooks ?? []).map((h) => h.command ?? ''))
+    .filter(Boolean);
+}
+
+/**
+ * The shell Claude Code hands hook commands to: Git Bash on Windows, never
+ * WSL's `bash.exe` that PATH usually finds first there.
+ */
+function hookShell(): string | null {
+  if (process.platform !== 'win32') return 'bash';
+  const configured = process.env.CLAUDE_CODE_GIT_BASH_PATH;
+  if (configured) return existsSync(configured) ? configured : null;
+  try {
+    const execPath = execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim();
+    const candidate = join(execPath, '..', '..', '..', 'bin', 'bash.exe');
+    return existsSync(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+const shellPath = (p: string) => `"${p.split('\\').join('/')}"`;
+
+/**
+ * Runs every hook installed on `event` the way Claude Code does: the stored
+ * command string through its shell, the payload on stdin, all of them at once.
+ * Returns what the recall hook printed, or why the hooks could not be run.
+ */
+function runInstalledHooks(
+  settings: InstalledSettings,
+  event: string,
+  payload: object,
+  env: NodeJS.ProcessEnv,
+): { recall: string } | string {
+  const shell = hookShell();
+  if (!shell) return 'cannot locate the shell Claude Code runs hooks with';
+  const commands = installedCommands(settings, event);
+  if (commands.length === 0) return `no hooks are installed on ${event}`;
+
+  const scratch = mkdtempSync(join(tmpdir(), 'nexusmem-preflight-hook-'));
+  try {
+    const input = join(scratch, 'payload.json');
+    writeFileSync(input, JSON.stringify(payload));
+    const outputs = commands.map((_, i) => join(scratch, `out-${i}.txt`));
+    const script = `${commands.map((c, i) => `${c} < ${shellPath(input)} > ${shellPath(outputs[i]!)} &`).join('\n')}\nwait\n`;
+    const result = spawnSync(shell, ['-c', script], { env, encoding: 'utf8', timeout: 60_000 });
+    if (result.status !== 0) return `the installed ${event} hooks did not run (${result.status}): ${result.stderr}`;
+    const recallIndex = commands.findIndex((c) => /agent recall/.test(c));
+    return { recall: recallIndex < 0 ? '' : readFileSync(outputs[recallIndex]!, 'utf8') };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 interface Fixture {
@@ -385,14 +449,34 @@ function verify(scenario: Scenario): string[] {
     }
 
     // --- O: the installed hooks reach recall on a tool-success failure ----
+    // Runs the command strings `agent install` wrote, through the shell Claude
+    // Code runs them with, all hooks of an event at once -- not a stand-in call.
     run(['agent', 'install', '--project', '-C', dir], { env });
-    const settings = JSON.parse(readFileSync(join(dir, '.claude', 'settings.local.json'), 'utf8')) as {
-      hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>;
-    };
-    const recallOn = (event: string) =>
-      (settings.hooks?.[event] ?? []).some((entry) => (entry.hooks ?? []).some((h) => /agent recall/.test(h.command ?? '')));
-    if (!recallOn('PostToolUse')) problems.push('O: the installed hooks do not run recall on PostToolUse');
-    if (!recallOn('PostToolUseFailure')) problems.push('O: the installed hooks no longer run recall on PostToolUseFailure');
+    const settings = JSON.parse(readFileSync(join(dir, '.claude', 'settings.local.json'), 'utf8')) as InstalledSettings;
+    for (const event of ['PostToolUse', 'PostToolUseFailure']) {
+      if (!installedCommands(settings, event).some((c) => /agent recall/.test(c))) {
+        problems.push(`O: the installed hooks do not run recall on ${event}`);
+      }
+    }
+    const eventLogPath = join(nmHome, 'agent-events.jsonl');
+    const captured = (toolUseId: string) =>
+      readFileSync(eventLogPath, 'utf8')
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as { eventId?: string; outcome?: string; exitCode?: number | null; execHash?: string; stdout?: unknown })
+        .find((e) => e.eventId === toolUseId);
+    const targetExecHash = redactAgentEvent({
+      agent: 'claude-code',
+      sessionId: 'expected',
+      eventId: 'expected',
+      ts: new Date().toISOString(),
+      cwd: dir,
+      kind: 'command',
+      command: scenario.command,
+      outcome: 'fail',
+      exitCode: 1,
+      durationMs: null,
+    }).execHash;
 
     const wrappedSession = session();
     const wrappedPayload = {
@@ -404,33 +488,77 @@ function verify(scenario: Scenario): string[] {
       tool_response: { stdout: `${scenario.command} failed`.concat(String.fromCharCode(10), 'EXIT:1'), stderr: '', interrupted: false },
       tool_use_id: 'toolu_preflight_wrapped',
     };
-    const wrappedRecall = recall(wrappedPayload, dir, env);
-    if (!wrappedRecall.includes('failed in this repository before')) {
-      problems.push('O: a tool-success failure behind the observed exit wrapper did not reach its history');
+    const hookRun = runInstalledHooks(settings, 'PostToolUse', wrappedPayload, env);
+    if (typeof hookRun === 'string') {
+      problems.push(`O: ${hookRun}`);
     } else {
-      const injected = JSON.parse(wrappedRecall) as { hookSpecificOutput?: { hookEventName?: string; additionalContext?: string } };
-      if (injected.hookSpecificOutput?.hookEventName !== 'PostToolUse') {
-        problems.push(`O: recall answered under ${String(injected.hookSpecificOutput?.hookEventName)}, not the event that carried it`);
+      const event = captured(wrappedPayload.tool_use_id);
+      if (!event) problems.push('O: the installed capture hook recorded nothing for the wrapped run');
+      else {
+        if (event.outcome !== 'fail' || event.exitCode !== 1) {
+          problems.push(`O: the installed capture hook recorded ${event.outcome}/${String(event.exitCode)}, not the recovered fail/1`);
+        }
+        if (event.execHash !== targetExecHash) problems.push('O: the captured wrapped run does not carry the target execution identity');
+        if ('stdout' in event) problems.push('O: the captured event persisted raw tool output');
       }
-      const context = injected.hookSpecificOutput?.additionalContext ?? '';
-      for (const [label, edit] of [
-        ['A', scenario.attemptA],
-        ['B', scenario.attemptB],
-      ] as const) {
-        const leaf = edit.file.split('/').pop() ?? edit.file;
-        if (!context.includes(leaf) && !context.includes(edit.file)) problems.push(`O: the wrapped recall omits approach ${label}`);
+
+      const wrappedRecall = hookRun.recall;
+      if (!wrappedRecall.includes('failed in this repository before')) {
+        problems.push('O: a tool-success failure behind the observed exit wrapper did not reach its history');
+      } else {
+        const injected = JSON.parse(wrappedRecall) as { hookSpecificOutput?: { hookEventName?: string; additionalContext?: string } };
+        if (injected.hookSpecificOutput?.hookEventName !== 'PostToolUse') {
+          problems.push(`O: recall answered under ${String(injected.hookSpecificOutput?.hookEventName)}, not the event that carried it`);
+        }
+        const context = injected.hookSpecificOutput?.additionalContext ?? '';
+        for (const [label, edit] of [
+          ['A', scenario.attemptA],
+          ['B', scenario.attemptB],
+        ] as const) {
+          const leaf = edit.file.split('/').pop() ?? edit.file;
+          if (!context.includes(leaf) && !context.includes(edit.file)) problems.push(`O: the wrapped recall omits approach ${label}`);
+        }
+        // C is named the way E/G require it: as a fix, by the file it touched.
+        const cLeaf = scenario.attemptC.file.split('/').pop()!;
+        if (!context.includes('fixed on') || (!context.includes(cLeaf) && !context.includes(fixLeaf))) {
+          problems.push('O: the wrapped recall omits the fix (C)');
+        }
       }
     }
-    // Same execution, same session: one delivery, whichever event arrives second.
-    const wrappedAgain = recall({ ...wrappedPayload, session_id: wrappedSession, tool_use_id: 'toolu_preflight_wrapped_2' }, dir, env);
-    if (wrappedAgain !== '') problems.push('O: one execution produced two recall deliveries in the same session');
 
-    const wrappedOk = recall(
-      { ...wrappedPayload, session_id: session(), tool_response: { stdout: 'ok'.concat(String.fromCharCode(10), 'EXIT:0'), stderr: '', interrupted: false } },
-      dir,
-      env,
-    );
-    if (wrappedOk !== '') problems.push('O: an ordinary tool success produced failure recall');
+    // Same execution, same session: one delivery, whichever event arrives second.
+    // Only meaningful once the first one was delivered; a miss is already reported above.
+    if (typeof hookRun !== 'string' && hookRun.recall !== '') {
+      const again = runInstalledHooks(
+        settings,
+        'PostToolUseFailure',
+        { ...failurePayload(dir, scenario.command, errorText), session_id: wrappedSession, tool_use_id: 'toolu_preflight_wrapped_2' },
+        env,
+      );
+      if (typeof again === 'string') problems.push(`O: ${again}`);
+      else if (again.recall !== '') problems.push('O: one execution produced two recall deliveries in the same session');
+    }
+
+    // The failure event still delivers on its own, under its own name.
+    const failureRun = runInstalledHooks(settings, 'PostToolUseFailure', failurePayload(dir, scenario.command, errorText), env);
+    if (typeof failureRun === 'string') problems.push(`O: ${failureRun}`);
+    else if (!failureRun.recall.includes('"hookEventName":"PostToolUseFailure"')) {
+      problems.push('O: the installed PostToolUseFailure hooks no longer deliver recall under their own event name');
+    }
+
+    const okPayload = {
+      ...wrappedPayload,
+      session_id: session(),
+      tool_use_id: 'toolu_preflight_wrapped_ok',
+      tool_response: { stdout: 'ok'.concat(String.fromCharCode(10), 'EXIT:0'), stderr: '', interrupted: false },
+    };
+    const okRun = runInstalledHooks(settings, 'PostToolUse', okPayload, env);
+    if (typeof okRun === 'string') problems.push(`O: ${okRun}`);
+    else {
+      if (okRun.recall !== '') problems.push('O: an ordinary tool success produced failure recall');
+      const event = captured(okPayload.tool_use_id);
+      if (event?.outcome !== 'ok' || event.exitCode !== 0) problems.push('O: the installed capture hook did not record the ordinary success as ok/0');
+    }
 
     // --- H: token budget -------------------------------------------------
     if (bareRecall.length > 0) {
