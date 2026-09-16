@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { injectedText, type TranscriptAttachment } from './transcript-injections.js';
 
 /**
  * The qualitative half of the ambient eval: what each run actually did, read
@@ -29,16 +30,16 @@ function describe(path: string): string[] {
   const lines: string[] = [];
   for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
     if (!line.trim()) continue;
-    let entry: { message?: { role?: string; content?: unknown }; attachment?: { type?: string; hookName?: string; content?: unknown } };
+    let entry: { message?: { role?: string; content?: unknown }; attachment?: TranscriptAttachment };
     try {
       entry = JSON.parse(line);
     } catch {
       continue;
     }
 
-    const hook = entry.attachment;
-    if (hook?.type?.startsWith('hook') && typeof hook.content === 'string' && hook.content.includes('NexusMem:')) {
-      lines.push(`    INJECTED (${hook.hookName ?? '?'}): ${hook.content.replace(/\s+/g, ' ').slice(0, 220)}`);
+    const injected = injectedText(entry.attachment);
+    if (injected !== null) {
+      lines.push(`    INJECTED (${entry.attachment?.hookName ?? '?'}): ${injected.replace(/\s+/g, ' ').slice(0, 220)}`);
     }
 
     const content = entry.message?.content;
