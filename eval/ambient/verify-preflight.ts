@@ -40,6 +40,10 @@ import { deadEndFiles, revertsDayOneFix, SCENARIOS, type Scenario } from './scen
  *      it the history holds
  *   N. a fix the same execution failed again after -- with no revert in git
  *      -- is reported as no longer holding by both recall and the digest
+ *   O. the hooks `agent install` writes really run recall on PostToolUse, so a
+ *      command wrapped as `; echo "EXIT:$?"` -- which makes Claude Code report
+ *      the tool call as a success -- still reaches its history, once, under the
+ *      event name that carried it; an ordinary success still says nothing
  *
  *   npm run build && npx tsx eval/ambient/verify-preflight.ts [repeats]
  */
@@ -379,6 +383,54 @@ function verify(scenario: Scenario): string[] {
     } else if (!saysStale(againRecall)) {
       problems.push('N: recall still presents a fix the same execution failed again after as current');
     }
+
+    // --- O: the installed hooks reach recall on a tool-success failure ----
+    run(['agent', 'install', '--project', '-C', dir], { env });
+    const settings = JSON.parse(readFileSync(join(dir, '.claude', 'settings.local.json'), 'utf8')) as {
+      hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>;
+    };
+    const recallOn = (event: string) =>
+      (settings.hooks?.[event] ?? []).some((entry) => (entry.hooks ?? []).some((h) => /agent recall/.test(h.command ?? '')));
+    if (!recallOn('PostToolUse')) problems.push('O: the installed hooks do not run recall on PostToolUse');
+    if (!recallOn('PostToolUseFailure')) problems.push('O: the installed hooks no longer run recall on PostToolUseFailure');
+
+    const wrappedSession = session();
+    const wrappedPayload = {
+      session_id: wrappedSession,
+      cwd: dir,
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: `cd "${dir}" && ${scenario.command}; echo "EXIT:$?"` },
+      tool_response: { stdout: `${scenario.command} failed`.concat(String.fromCharCode(10), 'EXIT:1'), stderr: '', interrupted: false },
+      tool_use_id: 'toolu_preflight_wrapped',
+    };
+    const wrappedRecall = recall(wrappedPayload, dir, env);
+    if (!wrappedRecall.includes('failed in this repository before')) {
+      problems.push('O: a tool-success failure behind the observed exit wrapper did not reach its history');
+    } else {
+      const injected = JSON.parse(wrappedRecall) as { hookSpecificOutput?: { hookEventName?: string; additionalContext?: string } };
+      if (injected.hookSpecificOutput?.hookEventName !== 'PostToolUse') {
+        problems.push(`O: recall answered under ${String(injected.hookSpecificOutput?.hookEventName)}, not the event that carried it`);
+      }
+      const context = injected.hookSpecificOutput?.additionalContext ?? '';
+      for (const [label, edit] of [
+        ['A', scenario.attemptA],
+        ['B', scenario.attemptB],
+      ] as const) {
+        const leaf = edit.file.split('/').pop() ?? edit.file;
+        if (!context.includes(leaf) && !context.includes(edit.file)) problems.push(`O: the wrapped recall omits approach ${label}`);
+      }
+    }
+    // Same execution, same session: one delivery, whichever event arrives second.
+    const wrappedAgain = recall({ ...wrappedPayload, session_id: wrappedSession, tool_use_id: 'toolu_preflight_wrapped_2' }, dir, env);
+    if (wrappedAgain !== '') problems.push('O: one execution produced two recall deliveries in the same session');
+
+    const wrappedOk = recall(
+      { ...wrappedPayload, session_id: session(), tool_response: { stdout: 'ok'.concat(String.fromCharCode(10), 'EXIT:0'), stderr: '', interrupted: false } },
+      dir,
+      env,
+    );
+    if (wrappedOk !== '') problems.push('O: an ordinary tool success produced failure recall');
 
     // --- H: token budget -------------------------------------------------
     if (bareRecall.length > 0) {
