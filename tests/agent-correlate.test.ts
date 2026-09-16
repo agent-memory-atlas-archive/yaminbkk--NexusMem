@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type AgentEvent, redactAgentEvent } from '../src/agent/event.js';
+import { recallFailure } from '../src/agent/recall.js';
 import { collectAgentEvents } from '../src/collectors/agent-events.js';
 import { correlateFailures, RESOLVED_BY_RETRY } from '../src/correlate/failure-fix.js';
 import { makeNodeId } from '../src/core/ids.js';
@@ -165,6 +166,21 @@ describe('correlateFailures: agent attempts', () => {
       ]);
 
       expect(correlateFailures(store, PROJECT)).toMatchObject({ linkedByRetry: 0, unexplainedRetries: 0 });
+    });
+
+    it('never lets a passing pipeline resolve the failure of the command it pipes', () => {
+      // The pipeline's exit 0 is `head`'s. It is recorded truthfully for the pipeline's own
+      // identity, and must not be read as the piped command passing -- here or in recall.
+      seed([
+        agentEvent({ ts: at(0) }),
+        agentEvent({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(5) }),
+        agentEvent({ command: `cd "${ROOT}" && ${COMMAND} 2>&1 | head -100`, outcome: 'ok', exitCode: 0, ts: at(6) }),
+      ]);
+
+      expect(correlateFailures(store, PROJECT)).toMatchObject({ failuresExamined: 1, linkedByRetry: 0, unexplainedRetries: 0 });
+      expect(store.getLinkedNodeIds(failureId(), RESOLVED_BY_RETRY)).toEqual([]);
+      const failedHash = (store.raw.prepare(`SELECT json_extract(meta,'$.execHash') AS h FROM nodes WHERE id = ?`).get(failureId()) as { h: string }).h;
+      expect(recallFailure(store, PROJECT, failedHash)).toMatchObject({ resolved: false, stale: false, superseded: false });
     });
 
     it('does not link a different execution that happens to share the wrapper', () => {
