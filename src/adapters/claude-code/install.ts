@@ -56,7 +56,12 @@ function matcherFor(commands: AgentHookCommands, event: string): HookMatcher[] {
     matcher: CAPTURE_MATCHER,
     hooks: [{ type: 'command', command: commands.capture }],
   };
-  if (event === 'PostToolUse') return [capture];
+  // Recall goes on both tool events, not just the failure one. A command an
+  // agent wrapped as `cmd; echo "EXIT:$?"` exits 0, so Claude Code reports the
+  // tool call as a success even though the target execution failed: measured as
+  // 4 of 9 missed deliveries in the Phase-5.3 eval. Whether the run counts as a
+  // failure is still decided by the payload's own evidence rules, not by which
+  // event carried it, and recall stays silent for anything else.
   return [
     capture,
     { matcher: RECALL_MATCHER, hooks: [{ type: 'command', command: commands.recall, timeout: RECALL_TIMEOUT_SECONDS }] },

@@ -15,7 +15,7 @@ import {
   removeAgentHooks,
   upsertAgentHooks,
 } from '../../adapters/claude-code/install.js';
-import { parseHookPayload, parseSessionStart } from '../../adapters/claude-code/payload.js';
+import { parseHookPayloadDetailed, parseSessionStart } from '../../adapters/claude-code/payload.js';
 import { readConfig, resolveWorkspace } from '../../config/workspace.js';
 import { readRepoInfo } from '../../git/repo.js';
 import { MemoryStore } from '../../store/store.js';
@@ -259,6 +259,17 @@ async function readStdin(): Promise<string> {
 }
 
 /**
+ * Claude Code matches `hookSpecificOutput.hookEventName` against the event it
+ * dispatched, so the reply has to name the event that carried the payload --
+ * recall now answers on PostToolUse as well as PostToolUseFailure. A family
+ * with no tool event of its own is never recalled against.
+ */
+const HOOK_EVENT_BY_FAMILY: Partial<Record<string, string>> = {
+  'post-tool-use': 'PostToolUse',
+  'post-tool-use-failure': 'PostToolUseFailure',
+};
+
+/**
  * Always exits 0 and prints nothing unless there is something worth saying.
  * An agent blocked, or fed an error message, by its own memory lookup would
  * be worse than having no memory at all.
@@ -267,8 +278,16 @@ export async function runAgentRecall(opts: AgentRecallOptions = {}): Promise<num
   const out = opts.out ?? ((chunk: string) => void process.stdout.write(chunk));
   try {
     const raw = opts.input ?? (await readStdin());
-    const event = parseHookPayload(raw, new Date().toISOString());
-    if (!event || event.kind !== 'command' || event.outcome !== 'fail' || !event.execHash || !event.cwd) return 0;
+    const parsed = parseHookPayloadDetailed(raw, new Date().toISOString());
+    if (!parsed.ok) return 0;
+    const event = parsed.event;
+    // Whether this run failed is the payload's own answer, already decided by the
+    // adapter's evidence rules: a real PostToolUseFailure, or a status the command
+    // itself echoed in a shape those rules accept. The event that carried it is
+    // only used to address the reply.
+    if (event.kind !== 'command' || event.outcome !== 'fail' || !event.execHash || !event.cwd) return 0;
+    const hookEventName = HOOK_EVENT_BY_FAMILY[parsed.family];
+    if (!hookEventName) return 0;
     if (!shouldInject(event.sessionId, event.execHash)) return 0;
 
     const repo = await readRepoInfo(event.cwd);
@@ -289,7 +308,7 @@ export async function runAgentRecall(opts: AgentRecallOptions = {}): Promise<num
     markInjected(event.sessionId, event.execHash);
     out(
       `${JSON.stringify({
-        hookSpecificOutput: { hookEventName: 'PostToolUseFailure', additionalContext: recall.text },
+        hookSpecificOutput: { hookEventName, additionalContext: recall.text },
       })}\n`,
     );
     return 0;
