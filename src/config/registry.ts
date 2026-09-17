@@ -116,7 +116,6 @@ export async function recordProject(input: RecordProjectInput): Promise<Registry
   return projects;
 }
 
-/** Drop entries by project id. Returns how many were removed. */
 export async function forgetProjects(projectIds: readonly string[]): Promise<number> {
   const existing = await readRegistry();
   const drop = new Set(projectIds);

@@ -9,7 +9,6 @@ import { DEFAULT_SLM_MODEL } from '../slm/provider.js';
 export const WORKSPACE_DIR = '.nexusmem';
 
 export interface Workspace {
-  /** Repository root. */
   root: string;
   /** `<root>/.nexusmem` */
   dir: string;

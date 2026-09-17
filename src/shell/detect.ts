@@ -77,7 +77,6 @@ async function tryReadScrapeSource(
   return parse(raw, stats.mtimeMs, { tailLines });
 }
 
-/** Enumerate and read every shell-history source available on this machine. */
 export async function collectAvailableShellHistory(opts: CollectShellHistoryOptions = {}): Promise<ShellSourceResult[]> {
   const results: ShellSourceResult[] = [];
   const tailLines = opts.tailLines ?? 300;

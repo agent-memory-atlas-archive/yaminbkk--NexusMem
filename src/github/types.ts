@@ -1,4 +1,3 @@
-/** One comment on an issue or pull request thread. */
 export interface RawGithubComment {
   author: string;
   body: string;

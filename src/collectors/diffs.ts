@@ -165,7 +165,6 @@ export function toMemoryNodes(
   });
 }
 
-/** Stream file-level diff nodes from `cwd`'s repository. */
 export async function* collectCommitDiffs(
   cwd: string,
   projectId: string,

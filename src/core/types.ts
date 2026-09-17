@@ -54,7 +54,6 @@ export function defaultProvenanceForKind(kind: NodeKind): Provenance {
   }
 }
 
-/** A single file touched by an event. */
 export interface FileTouch {
   /** Repo-relative path, forward slashes, post-rename. */
   path: string;

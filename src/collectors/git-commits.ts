@@ -150,7 +150,6 @@ export function toMemoryNode(
   };
 }
 
-/** Stream commits from `cwd`'s repository as MemoryNodes. */
 export async function* collectGitCommits(
   cwd: string,
   projectId: string,
