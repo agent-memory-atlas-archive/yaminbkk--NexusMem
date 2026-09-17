@@ -78,7 +78,6 @@ const passed = (command: string, id: string) => ({
   duration_ms: 900,
 });
 
-/** Every file under `dir` whose bytes contain the secret. */
 function filesContaining(dir: string, needle = SECRET): string[] {
   if (!existsSync(dir)) return [];
   const hits: string[] = [];
@@ -145,13 +144,11 @@ describe('ambient memory, day 1 to day 7', () => {
     expect(injected.hookEventName).toBe('PostToolUseFailure');
     const text: string = injected.additionalContext;
 
-    // It knows both dead ends, and what actually fixed it.
     expect(text).toContain('failed in this repository before');
     expect(text).toContain('a.ts');
     expect(text).toContain('b.ts');
     expect(text).toContain('fixed on');
     expect(text).toContain('c.ts');
-    // And it stays cheap enough to be automatic.
     expect(text.length).toBeLessThanOrEqual(MAX_RECALL_CHARS);
   });
 

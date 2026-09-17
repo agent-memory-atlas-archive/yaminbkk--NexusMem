@@ -24,7 +24,6 @@ const RAW = `export DB_PASSWORD=${SECRET}`;
 const RAW_HASH = sha256Hex(RAW).slice(0, 12);
 const event = (command = RAW) => JSON.stringify({ ts: '2026-09-10T03:00:00.000Z', cwd: 'D:/repo', exitCode: 0, durationMs: 7, command });
 
-/** Every file under `dir`, recursively, whose bytes contain the secret. */
 function filesContaining(dir: string, needle = SECRET): string[] {
   if (!existsSync(dir)) return [];
   const hits: string[] = [];

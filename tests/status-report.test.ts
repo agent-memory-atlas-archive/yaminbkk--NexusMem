@@ -98,7 +98,6 @@ describe('status report body', () => {
     expect(output).toMatch(/git\s+last run/);
     expect(output).not.toContain('no sources synced yet');
     expect(output).toMatch(/structure\s+1 import edge\(s\) across 1 file\(s\)/);
-    // Just-synced HEAD, so no "behind HEAD" nudge.
     expect(output).not.toContain('git behind HEAD');
   });
 

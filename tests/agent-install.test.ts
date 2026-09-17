@@ -739,7 +739,6 @@ describe('nexusmem agent recall (CLI)', () => {
       await runAgentSessionStart({ input: sessionStartPayload(), out: (c) => out.push(c), startSync: (r) => synced.push(r) }),
     ).toBe(0);
 
-    // The sync the user previously had to remember to run.
     expect(synced).toHaveLength(1);
     expect(out.join('')).toContain('with no recorded fix');
     expect(out.join('')).toContain('npm test');

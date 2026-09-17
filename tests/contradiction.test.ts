@@ -178,7 +178,6 @@ describe('checkContradictions', () => {
     expect(store.hasContradictionCheck('old', 'new')).toBe(true);
     expect(slm.prompts).toHaveLength(1);
 
-    // Second run: memoized, zero model calls, still no suggestion.
     const again = await checkContradictions(store, embedder, slm, PROJECT, [staleCandidate(oldNode)], { model: 'test-model' });
     expect(again).toEqual([]);
     expect(slm.prompts).toHaveLength(1);
