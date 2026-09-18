@@ -597,6 +597,12 @@ function verify(scenario: Scenario): string[] {
  * downstream would inherit the flake as a result.
  */
 const REPEATS = Number(process.argv[2] ?? 1);
+// NaN, zero and negatives skip the loop entirely, which then prints "safe to
+// run the model eval" without having checked anything.
+if (!Number.isInteger(REPEATS) || REPEATS < 1) {
+  process.stderr.write(`repeats must be a positive integer, got: ${process.argv[2]}\n`);
+  process.exit(2);
+}
 let failed = false;
 
 for (let pass = 1; pass <= REPEATS; pass += 1) {
