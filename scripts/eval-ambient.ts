@@ -707,8 +707,18 @@ function summarize(results: readonly RunResult[]): string {
   for (const scenario of SCENARIOS) {
     lines.push('', scenario.name);
     for (const arm of ARMS) {
-      const runs = results.filter((r) => r.scenario === scenario.name && r.arm === arm);
-      if (runs.length === 0) continue;
+      const cell = results.filter((r) => r.scenario === scenario.name && r.arm === arm);
+      if (cell.length === 0) continue;
+      // The same filter `eval/ambient/analyse.ts` applies to the same
+      // results.json: a run that never measured model behaviour carries the
+      // all-false `empty` shape, which every rate below would read as a real
+      // miss. Excluded runs are counted rather than dropped silently.
+      const runs = cell.filter((r) => !r.systemFailure && !r.error);
+      const excluded = cell.length - runs.length;
+      if (runs.length === 0) {
+        lines.push(`  ${arm.padEnd(9)} no measured runs (${excluded} excluded)`);
+        continue;
+      }
       const n = runs.length;
       const rate = (p: (r: RunResult) => boolean) => `${runs.filter(p).length}/${n}`;
       const mean = (pick: (r: RunResult) => number) => runs.reduce((s, r) => s + pick(r), 0) / n;
@@ -733,6 +743,7 @@ function summarize(results: readonly RunResult[]): string {
           `noise ${mean((r) => r.irrelevantInjections).toFixed(1)}`,
           `noticed ${rate((r) => r.noticedNexusMem).padEnd(4)}`,
           `$${mean((r) => r.costUsd).toFixed(3)}`,
+          ...(excluded > 0 ? [`(${excluded} excluded)`] : []),
         ].join('  '),
       );
     }
