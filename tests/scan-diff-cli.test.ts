@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runScanDiff } from '../src/cli/commands/scan-diff.js';
 import { gitFixture } from './helpers.js';
 
-/** `nexusmem scan-diff` (`runScanDiff`) had zero test coverage -- same gap as scan-git. */
+/** Covers `nexusmem scan-diff` (`runScanDiff`). */
 
 const GIT_ENV = {
   ...process.env,

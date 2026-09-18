@@ -192,11 +192,9 @@ describe('sync --prune-source / --prune-stale-shell', () => {
   });
 
   it('also sweeps a stale prior identity of this same repo, per listOtherProjectIds -- the real bug found 2026-08-15', async () => {
-    // Reproduces the real shape found live: reconcile.ts deliberately leaves
-    // dead pre-hook shell nodes behind under an old project id after a remote
-    // rename, registered in the projects table (as any id a real sync has
-    // touched would be) but no longer the live id. A live-id-only prune
-    // cannot reach them; that was this session's actual finding.
+    // reconcile.ts deliberately leaves dead pre-hook shell nodes behind under
+    // an old project id after a remote rename: registered in the projects
+    // table, but not the live id. A live-id-only prune cannot reach them.
     const staleProjectId = makeProjectId({ root: dir, originUrl: 'https://example.com/acme/prune-source-renamed-from.git' });
     const ws = resolveWorkspace(dir);
     const store = MemoryStore.open(ws.dbPath);

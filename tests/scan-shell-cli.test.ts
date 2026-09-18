@@ -6,7 +6,7 @@ import { runScanShell } from '../src/cli/commands/scan-shell.js';
 import { gitFixture } from './helpers.js';
 
 /**
- * `nexusmem scan-shell` (`runScanShell`) had zero test coverage. `bashHistoryPath`/
+ * Covers `nexusmem scan-shell` (`runScanShell`). `bashHistoryPath`/
  * `zshHistoryPath` honor `HISTFILE_BASH`/`HISTFILE` env vars (src/shell/paths.ts),
  * which is what lets this point the scrape at a throwaway temp file instead of the
  * real machine's shell history.

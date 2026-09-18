@@ -125,8 +125,8 @@ describe('recallFailure', () => {
   });
 
   it('stops calling a fix current once the same execution failed again after it', () => {
-    // The digest already says "that fix no longer holds" for this evidence; recall
-    // used to answer "fixed ... check what changed in that fix" for the same rows.
+    // Recall and the digest must read the same rows the same way: neither may
+    // call the fix current once the execution failed again after it.
     const command = 'npm test';
     store.upsertNodes(collectAgentEvents([event({ command, ts: at(0) })], PROJECT, { repoRoot: ROOT }));
     store.upsertNodes(
@@ -186,11 +186,8 @@ describe('recallSessionStart', () => {
   });
 
   it('shows the resolved chain once every failure has a recorded fix, instead of staying silent', () => {
-    // This is the exact case the digest used to hide: `git log`-worthy
-    // history that answers the question outright. Silence here was the
-    // backwards behaviour the Phase-5 eval flagged -- the tester's own
-    // "failure -> fix" case was excluded by definition because it *was*
-    // fixed. This replaces the old "says nothing" expectation.
+    // A fully resolved chain is `git log`-worthy history that answers the
+    // question outright, so being fixed must not exclude it from the digest.
     seedDayOne();
     correlateFailures(store, PROJECT);
 

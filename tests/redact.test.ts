@@ -197,12 +197,11 @@ describe('redact: idempotence and profiles', () => {
 });
 
 /**
- * Three ways a secret used to survive redaction, all reported in review of the
- * v0.10.5 branch and all reproduced against that code before being fixed here:
- * a quoted value ending early at an escaped quote, an option-borne bearer token
- * with no digit in it, and a quoted curl credential containing a space.
+ * Three ways a secret can survive redaction: a quoted value ending early at an
+ * escaped quote, an option-borne bearer token with no digit in it, and a
+ * quoted curl credential containing a space.
  */
-describe('redact: values that used to end the match early', () => {
+describe('redact: values that can end the match early', () => {
   const BS = String.fromCharCode(92);
 
   it.each([
