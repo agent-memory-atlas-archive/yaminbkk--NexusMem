@@ -658,11 +658,8 @@ function runPruneSources(
   const startedAt = Date.now();
   let removed = 0;
   for (const { source, id } of counts) removed += store.pruneSourceNodes(id, source, []);
-  // Coarse deletes previously left no trace at all -- `forget` writes
-  // `mutation_audit`, this didn't, an asymmetry an external review flagged
-  // (docs/forget-mechanism.md). No tombstones here: unlike `forget`, this
-  // path deletes by source/id, not by value, so there is no single matched
-  // value to hash.
+  // Audited like `forget`, but with no tombstones: this path deletes by
+  // source/id, not by value, so there is no single matched value to hash.
   store.recordMutationAudit({
     action: 'prune_source',
     projectId,

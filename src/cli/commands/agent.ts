@@ -199,8 +199,7 @@ export interface AgentSessionStartOptions {
 }
 
 /**
- * Detached and unwaited: this is the "sync at session start" step the user
- * previously had to remember, and the session must not wait on it.
+ * Detached and unwaited: the session must not wait on a sync.
  */
 function spawnBackgroundSync(repoRoot: string): void {
   const cli = process.argv[1];

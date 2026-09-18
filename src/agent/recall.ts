@@ -228,32 +228,25 @@ const STATE_PRIORITY: Record<CommandState, number> = { resolved: 0, stale: 1, su
 /**
  * What is worth knowing when a session opens.
  *
- * This used to mean only "commands that failed here recently and that
- * nothing has fixed" -- which excluded the single most useful thing NexusMem
- * can say, "this failed before, and here is what fixed it", for the sole
- * reason that it *was* fixed. A resolved failure->fix chain is the most
- * actionable memory there is, so it is now listed ahead of an unrelated
- * failure with no known answer, even when the latter is more recent.
+ * A resolved failure->fix chain is the most actionable memory there is, so it
+ * is listed ahead of an unrelated failure with no known answer, even when the
+ * latter is more recent.
  *
  * Per command, only the MOST RECENT occurrence in the window decides the
  * state: if it has a `resolved_by:retry` link, the chain is 'resolved' -- the
  * one heuristic dogfooding found correct on every manually-checked link (see
  * correlate/failure-fix.ts) -- unless git shows that fix was later reverted,
- * which makes it 'superseded'. The Phase-5 eval measured the cost of not
- * having that check: every ambient trial of the `stale-fix` scenario was told
- * a fix was in place on a date when the repository's own history had already
- * backed it out. If the newest occurrence has no retry link but an OLDER
- * occurrence of the exact same command did, that fix has since stopped
- * holding -- said as 'stale', not silently dropped and not repeated as if it
- * still applied. If
- * the newest occurrence instead has only a `resolved_by:discussion` link --
- * the other heuristic, measured roughly half wrong when dogfooded -- it is
- * 'uncertain': named, but never worded as "fixed", because that evidence does
- * not support the word. Otherwise it is plain 'unresolved'.
+ * which makes it 'superseded'. If the newest occurrence has no retry link but
+ * an OLDER occurrence of the exact same command did, that fix has since
+ * stopped holding -- said as 'stale', not silently dropped and not repeated as
+ * if it still applied. If the newest occurrence instead has only a
+ * `resolved_by:discussion` link -- the other heuristic, measured roughly half
+ * wrong when dogfooded -- it is 'uncertain': named, but never worded as
+ * "fixed", because that evidence does not support the word. Otherwise it is
+ * plain 'unresolved'.
  *
- * Returns null only when there is truly nothing in the window -- a
- * repository whose only history is fully resolved chains now gets a digest,
- * not silence, which is the deliberate behaviour change here.
+ * Returns null only when there is truly nothing in the window: a repository
+ * whose only history is fully resolved chains still gets a digest.
  */
 export function recallSessionStart(store: MemoryStore, projectId: string, now = new Date()): SessionDigest | null {
   const since = new Date(now.getTime() - DIGEST_WINDOW_DAYS * 86_400_000).toISOString();

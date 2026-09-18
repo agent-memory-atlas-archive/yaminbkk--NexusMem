@@ -104,8 +104,7 @@ export interface VectorSearchOptions {
  * larger database. `created_at` isn't a partition column though (an
  * `--as-of` query is rare and per-query, not worth a second one), so that
  * path still over-fetches to compensate for rows the time filter drops
- * afterward -- the same heuristic this function used to need for both
- * dimensions, now needed for only one.
+ * afterward.
  */
 export function vectorSearch(
   db: Database,

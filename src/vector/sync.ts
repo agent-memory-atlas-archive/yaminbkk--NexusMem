@@ -95,10 +95,8 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
  * BM25 still finds it. This is additive, not a gate: sync always succeeds
  * whether or not an embedding provider is available.
  *
- * Drains the entire backlog by default. It used to stop after 200 nodes,
- * which meant a large repository needed several `sync` runs before vector
- * search covered it, with nothing in the output saying so. Two things make
- * one pass safe to leave uncapped:
+ * Drains the entire backlog by default. Two things make one uncapped pass
+ * safe:
  *
  * - **Paging is monotonic in rowid**, so a node the provider failed on is
  *   passed over rather than retried forever (see `findNodesNeedingEmbedding`).

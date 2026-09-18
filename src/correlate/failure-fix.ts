@@ -4,20 +4,16 @@ import { significantTokens } from '../store/fts.js';
 import type { MemoryStore } from '../store/store.js';
 
 /**
- * Links a failed `shell_command` node to whatever later resolved it --
- * Phase 7's "failure -> fix chain" building block. Two independent,
- * deliberately narrow heuristics; a failure can be linked by either, both,
- * or neither. Both are unvalidated until dogfooded against a real corpus
- * (see ROADMAP.local.md's Phase 7 entry) -- this is a first pass sized for
- * that validation, not a claim that either heuristic is correct yet.
+ * Links a failed `shell_command` node to whatever later resolved it. Two
+ * independent, deliberately narrow heuristics; a failure can be linked by
+ * either, both, or neither.
  *
  * - **Same-command retry.** A later `shell_command` in the same project and
  *   `cwd`, the *exact* normalized command text (trim + collapse whitespace +
  *   lowercase) -- or, when both rows are agent-recorded, the same `execHash`
  *   -- `exitCode === 0`, within `retryWindowMs`. High precision by
  *   construction, low recall: a fix that changes the command itself (a typo
- *   correction, an added flag) is invisible to an exact-text match. Not
- *   attempted here -- fuzzy matching is a stretch goal, not this pass's job.
+ *   correction, an added flag) is invisible to an exact-text match.
  *   For agent-recorded pairs one more thing is known -- which files the agent
  *   changed -- so an identical command that passes with nothing edited in
  *   between is counted as unexplained rather than linked: the pass is real,
@@ -26,40 +22,19 @@ import type { MemoryStore } from '../store/store.js';
  * - **Conversation bridge.** The best FTS match (AND of every significant,
  *   non-boilerplate token in the failing command) among
  *   `conversation_turn`/`session_summary` nodes in the following
- *   `discussionWindowMs`. Originally used an OR-of-tokens match and was
- *   dogfooded against this repo's real history 2026-08-15: roughly half
- *   the links were wrong, and the confirmed false positives were all driven
- *   by a single shared generic token (e.g. an "npm whoami" failure linked to
- *   an unrelated summary that just happens to mention "npm"). Tightened to
- *   AND -- still loose in the other direction, since a discussion that
- *   paraphrases the command instead of naming its words will not match, but
- *   an unvalidated false positive is worse than a missed true positive here.
- *   Does not chain further to whatever commit that conversation might cite;
- *   linking failure -> discussion is the whole claim this heuristic makes.
+ *   `discussionWindowMs`. AND rather than OR, because a single shared generic
+ *   token (an "npm whoami" failure against any turn mentioning "npm") linked
+ *   roughly half of a dogfooded sample wrongly; a missed true positive is
+ *   preferable to a confident false one here. Does not chain further to
+ *   whatever commit that conversation might cite; linking failure ->
+ *   discussion is the whole claim this heuristic makes.
  *
- *   Re-dogfooded at larger scale 2026-08-16 against a second real project
- *   (`villa-bot`, previously unseen by this heuristic): the AND fix held on
- *   this repo's own 5 links (still 5/5 correct) but missed a new false-
- *   positive class the small original sample never surfaced -- a command
- *   made entirely of the tool's own boilerplate words (`nexusmem sync`)
- *   AND-matched an unrelated turn that just happened to show the same
- *   command as generic advice. bm25 score could not separate this from a
- *   true positive (measured: the false positive scored -9.685, *stronger*
- *   than two real true positives at -5.899/-6.559) -- bm25 rewards rarity
- *   *within whatever corpus it's run against*, and in villa-bot's smaller
- *   corpus those words hadn't accumulated enough occurrences to be
- *   recognized as boilerplate, even though the same words measure 33-39%
- *   document frequency in this repo's own (more self-referential) history.
- *   `filterBoilerplateTokens` below adds that corpus-relative check as a
- *   second filtering pass. Note honestly: at villa-bot's actual measured
- *   frequency for those words (9.3%/4.6%, comfortably under the threshold),
- *   this pass does *not* retroactively catch that specific instance -- it
- *   was a low-frequency AND-coincidence, not corpus saturation. What it does
- *   protect against is the class the numbers actually support: a command
- *   whose words are truly ubiquitous in a project's own history (like this
- *   repo's own name/verbs), which the villa-bot corpus wasn't saturated with
- *   yet but plausibly will be over time, and which this repo's corpus
- *   already is.
+ *   A command made entirely of the tool's own boilerplate words (`nexusmem
+ *   sync`) still AND-matches unrelated turns, and bm25 cannot separate that
+ *   from a true positive: it rewards rarity within whatever corpus it runs
+ *   against. `filterBoilerplateTokens` below adds a corpus-relative document
+ *   frequency check as a second filtering pass, which catches words that are
+ *   ubiquitous in a project's own history rather than every coincidence.
  */
 
 export interface CorrelateOptions {
