@@ -125,13 +125,9 @@ async function main(): Promise<void> {
     throw new Error('usage: reanalyse-transcripts.ts <resultsJsonPath> <transcriptSearchDir...>');
   }
   const rows = JSON.parse(readFileSync(resultsPath, 'utf8')) as Row[];
-  const before = { recallFired: 0, digestFired: 0 };
-  const after = { recallFired: 0, digestFired: 0 };
   const changed: string[] = [];
 
   const updated = rows.map((row) => {
-    before.recallFired += row.recallFired ? 1 : 0;
-    before.digestFired += row.digestFired ? 1 : 0;
     if (row.arm !== 'ambient') return row; // only ambient carries hook injections at all
     const transcriptPath = findTranscript(searchDirs, row.scenario, row.arm, row.repeat);
     if (!transcriptPath) {
@@ -139,8 +135,6 @@ async function main(): Promise<void> {
       return row;
     }
     const next = recompute(row, transcriptPath);
-    after.recallFired += next.recallFired ? 1 : 0;
-    after.digestFired += next.digestFired ? 1 : 0;
     if (next.recallFired !== row.recallFired || next.digestFired !== row.digestFired || next.injectedChars !== row.injectedChars) {
       changed.push(`${row.scenario}/${row.arm}/${row.repeat}: recallFired ${row.recallFired}->${next.recallFired}, digestFired ${row.digestFired}->${next.digestFired}, injectedChars ${row.injectedChars}->${next.injectedChars}`);
     }
@@ -148,6 +142,15 @@ async function main(): Promise<void> {
   });
 
   writeFileSync(resultsPath, JSON.stringify(updated, null, 2));
+  // Both totals are read off the same set of rows, so the printed delta is
+  // what this run recomputed -- counting `before` over every row and `after`
+  // over only the ones with a transcript made a skipped row look like a drop.
+  const tally = (rs: readonly Row[]) => ({
+    recallFired: rs.filter((r) => r.recallFired).length,
+    digestFired: rs.filter((r) => r.digestFired).length,
+  });
+  const before = tally(rows);
+  const after = tally(updated);
   process.stdout.write(`\nrows: ${rows.length}\n`);
   process.stdout.write(`recallFired: ${before.recallFired} -> ${after.recallFired}\n`);
   process.stdout.write(`digestFired: ${before.digestFired} -> ${after.digestFired}\n`);
