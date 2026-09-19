@@ -183,6 +183,24 @@ describe('correlateFailures: agent attempts', () => {
       expect(recallFailure(store, PROJECT, failedHash)).toMatchObject({ resolved: false, stale: false, superseded: false });
     });
 
+    it('does not resolve a failure with a pass that ran in a directory differing only by case', () => {
+      // Both directories exist on a case-sensitive filesystem, so crediting the
+      // pass would attach one directory's history to another's execution.
+      const root = '/srv/app';
+      const events = [
+        agentEvent({ command: COMMAND, cwd: root, ts: at(0) }),
+        agentEvent({ kind: 'edit', filePath: `${root}/src/a.ts`, cwd: root, outcome: 'ok', exitCode: null, ts: at(5) }),
+        agentEvent({ command: `cd "${root.replace('/app', '/App')}" && ${COMMAND}`, cwd: root, outcome: 'ok', exitCode: 0, ts: at(6) }),
+      ];
+      store.upsertNodes(collectAgentEvents(events, PROJECT, { repoRoot: root }));
+
+      expect(correlateFailures(store, PROJECT)).toMatchObject({ failuresExamined: 1, linkedByRetry: 0 });
+      const failure = store.raw
+        .prepare(`SELECT id FROM nodes WHERE project_id = ? AND json_extract(meta,'$.exitCode') = 1`)
+        .get(PROJECT) as { id: string };
+      expect(store.getLinkedNodeIds(failure.id, RESOLVED_BY_RETRY)).toEqual([]);
+    });
+
     it('does not link a different execution that happens to share the wrapper', () => {
       seed([
         agentEvent({ command: WRAPPED, ts: at(0) }),

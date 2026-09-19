@@ -29,7 +29,7 @@ describe('canonicalizeCommand', () => {
   });
 
   it('MATCH: a slash/backslash mismatch between the cd target and the recorded cwd still matches', () => {
-    expect(canonicalizeCommand('cd "C:/Users/dev/repo" && node check.js', 'C:\\Users\\dev\\repo')).toBe('node check.js');
+    expect(canonicalizeCommand('cd "C:/Users/dev/repo" && node check.js', 'C:\\Users\\dev\\repo', 'win32')).toBe('node check.js');
   });
 
   it('MATCH: a trailing slash on either side does not block the match', () => {
@@ -153,19 +153,19 @@ describe('real Claude Code compounds, from the Phase-5 transcripts', () => {
     // trial that produced a genuine tool error still found no history.
     const native = 'C:\\Users\\user-0118012023\\AppData\\Local\\Temp\\workspace-AH0HSV\\app';
     const gitBash = '/c/Users/user-0118012023/AppData/Local/Temp/workspace-AH0HSV/app';
-    expect(canonicalizeCommand(`cd "${gitBash}" && ls -la && echo --- && node check.js`, native)).toBe('node check.js');
-    expect(canonicalizeCommand(`cd "${gitBash}" && node check.js; echo "exit: $?"`, native)).toBe('node check.js');
+    expect(canonicalizeCommand(`cd "${gitBash}" && ls -la && echo --- && node check.js`, native, 'win32')).toBe('node check.js');
+    expect(canonicalizeCommand(`cd "${gitBash}" && node check.js; echo "exit: $?"`, native, 'win32')).toBe('node check.js');
   });
 
   it('MATCH: a WSL cd target against a native Windows cwd', () => {
     const native = 'C:\\Users\\dev\\app';
-    expect(canonicalizeCommand('cd "/mnt/c/Users/dev/app" && node check.js', native)).toBe('node check.js');
+    expect(canonicalizeCommand('cd "/mnt/c/Users/dev/app" && node check.js', native, 'win32')).toBe('node check.js');
   });
 
   it('NO MATCH: a drive-shaped cd to a genuinely different directory still refuses', () => {
     const native = 'C:\\Users\\dev\\app';
     const raw = 'cd "/c/Users/dev/other" && node check.js';
-    expect(canonicalizeCommand(raw, native)).toBe(raw);
+    expect(canonicalizeCommand(raw, native, 'win32')).toBe(raw);
   });
 
   it('MATCH: the observation prefix works with a POSIX-style cwd too', () => {
@@ -176,6 +176,98 @@ describe('real Claude Code compounds, from the Phase-5 transcripts', () => {
   it('MATCH: a cwd containing spaces still parses as one cd argument inside a compound', () => {
     const spaced = 'C:\\Users\\dev\\my repo';
     expect(canonicalizeCommand(`cd "${spaced}" && ls && node check.js; echo "exit: $?"`, spaced)).toBe('node check.js');
+  });
+});
+
+describe('directory identity is decided per platform, never by folding every path', () => {
+  const cd = (to: string, cwd: string, platform: NodeJS.Platform) => canonicalizeCommand(`cd "${to}" && node check.js`, cwd, platform);
+  const same = (to: string, cwd: string, platform: NodeJS.Platform) => cd(to, cwd, platform) === 'node check.js';
+
+  describe('POSIX hosts', () => {
+    it.each([
+      ['the same directory', '/home/dev/repo', '/home/dev/repo'],
+      ['a trailing slash on the cd target', '/home/dev/repo/', '/home/dev/repo'],
+      ['a trailing slash on the cwd', '/home/dev/repo', '/home/dev/repo/'],
+      ['a directory whose name contains spaces', '/home/dev/My Repo', '/home/dev/My Repo'],
+    ])('is the same directory: %s', (_label, to, cwd) => {
+      expect(same(to, cwd, 'linux')).toBe(true);
+    });
+
+    it.each([
+      // The bug this rule exists for: both exist on a case-sensitive filesystem.
+      ['a case difference', '/home/dev/Repo', '/home/dev/repo'],
+      ['a case difference in a parent', '/home/Dev/repo', '/home/dev/repo'],
+      ['the same basename under a different parent', '/home/a/repo', '/home/b/repo'],
+      // `/c/...` and `/mnt/c/...` are ordinary directories on a POSIX host.
+      ['a Git-Bash-shaped path that is just a directory here', '/c/Repo', '/c/repo'],
+      ['a WSL-shaped path that is just a directory here', '/mnt/c/Repo', '/mnt/c/repo'],
+      // A backslash is a legal character in a POSIX filename, not a separator.
+      ['a backslash that is part of the name', '/home/dev/a\\b', '/home/dev/a/b'],
+    ])('is a different directory: %s', (_label, to, cwd) => {
+      expect(same(to, cwd, 'linux')).toBe(false);
+    });
+
+    it('applies the same rule on darwin, whose volume case sensitivity this code cannot know', () => {
+      expect(same('/Users/dev/repo', '/Users/dev/repo', 'darwin')).toBe(true);
+      // Conservative: a case-insensitive volume would accept this, and the cost is a missed recall.
+      expect(same('/Users/Dev/Repo', '/Users/dev/repo', 'darwin')).toBe(false);
+    });
+  });
+
+  describe('Windows hosts', () => {
+    it.each([
+      ['a native drive path differing only by case', 'c:\\users\\dev\\app', 'C:\\Users\\dev\\app'],
+      ['forward slashes against backslashes', 'C:/Users/dev/app', 'C:\\Users\\dev\\app'],
+      ['a trailing separator', 'C:\\Users\\dev\\app\\', 'C:\\Users\\dev\\app'],
+      ['a drive root', 'C:\\', 'C:\\'],
+      ['a drive root spelled by Git Bash', '/c/', 'C:\\'],
+      ['a drive root spelled by Git Bash without its slash', '/c', 'C:\\'],
+      ['a Git Bash drive path differing by case', '/c/users/dev/app', 'C:\\Users\\dev\\App'],
+      ['a WSL drive path differing by case', '/mnt/c/users/dev/app', 'C:\\Users\\dev\\App'],
+      ['two WSL spellings differing by case', '/mnt/c/Repo/app', '/mnt/c/repo/app'],
+      ['a UNC share differing by case', '\\\\server\\share\\app', '\\\\Server\\Share\\App'],
+      ['a UNC share spelled with forward slashes', '//server/share/app', '\\\\server\\share\\app'],
+      ['a drive path containing spaces', 'C:\\Users\\dev\\my repo', 'C:\\Users\\dev\\my repo'],
+    ])('is the same directory: %s', (_label, to, cwd) => {
+      expect(same(to, cwd, 'win32')).toBe(true);
+    });
+
+    it.each([
+      ['a different directory on the same drive', 'C:\\Users\\dev\\other', 'C:\\Users\\dev\\app'],
+      ['a different drive', 'D:\\Users\\dev\\app', 'C:\\Users\\dev\\app'],
+      ['a different share on the same server', '\\\\server\\other\\app', '\\\\server\\share\\app'],
+      // Not a drive or a share, so nothing proves this volume folds case.
+      ['a non-drive path differing only by case', '/home/dev/Repo', '/home/dev/repo'],
+    ])('is a different directory: %s', (_label, to, cwd) => {
+      expect(same(to, cwd, 'win32')).toBe(false);
+    });
+  });
+});
+
+describe('execution identity across a cd whose case differs', () => {
+  const event = (command: string, cwd: string) =>
+    redactAgentEvent({
+      agent: 'claude-code',
+      sessionId: 's',
+      eventId: `e-${command.length}`,
+      ts: '2026-09-19T00:00:00.000Z',
+      cwd,
+      kind: 'command',
+      command,
+      outcome: 'fail',
+      exitCode: 1,
+      durationMs: null,
+    });
+
+  it('does not give a run in /home/dev/Repo the identity of one in /home/dev/repo', () => {
+    // Stripping that cd would hand this run the other directory's failure history.
+    const bare = event('node check.js', '/home/dev/repo');
+    const elsewhere = event('cd /home/dev/Repo && node check.js', '/home/dev/repo');
+
+    expect(canonicalizeCommand('cd /home/dev/Repo && node check.js', '/home/dev/repo', 'linux')).toBe(
+      'cd /home/dev/Repo && node check.js',
+    );
+    expect(elsewhere.execHash).not.toBe(bare.execHash);
   });
 });
 

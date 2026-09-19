@@ -1,6 +1,5 @@
 import { redact } from '../conversation/redact.js';
 import { sha256Hex } from '../core/ids.js';
-import { normalizePathForCompare } from '../shell/detect.js';
 
 /**
  * One attempt a coding agent made: a command it ran, or a file it edited.
@@ -136,17 +135,47 @@ const CD_SEGMENT = /^cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))$/;
  * `/c/Users/x` (Git Bash) and `/mnt/c/Users/x` (WSL) name the same directory
  * as `C:\Users\x`, and the agent writes whichever spelling its shell handed
  * it -- in one measured Phase-5 run it `cd`-ed to the Git Bash form while the
- * hook reported the native one, and the two could not be related. Folded only
- * for this comparison, not in `normalizePathForCompare`, which other callers
- * use against recorded cwds that never take this form.
+ * hook reported the native one, and the two could not be related. Windows-only,
+ * like `eval/ambient/paths.ts`: on a POSIX host `/c/tools` and `/mnt/c/data`
+ * are ordinary directories.
  */
-const DRIVE_SPELLING = /^\/(?:mnt\/)?([a-zA-Z])\//;
-const sameDirectory = (a: string, b: string): boolean => {
-  const fold = (p: string) => normalizePathForCompare(p.replace(DRIVE_SPELLING, (_m, drive: string) => `${drive}:/`));
-  return fold(a) === fold(b);
-};
+const DRIVE_SPELLING = /^\/(?:mnt\/)?([a-zA-Z])(?:\/|$)/;
+/** A drive-letter path, and a UNC share, once separators read as `/`. */
+const WINDOWS_DRIVE = /^[a-zA-Z]:(?:\/|$)/;
+const WINDOWS_UNC = /^\/\/[^/]+\/[^/]+/;
 
-function classify(segment: string, cwd: string | null): SegmentKind {
+/**
+ * One directory, in the form this comparison can decide on, with whether its
+ * case can be folded. Only a Windows volume is folded -- Windows is
+ * case-insensitive, and `cd /Repo` under a cwd of `/repo` is a different
+ * directory on a case-sensitive filesystem, so folding it would strip a `cd`
+ * that changed where the command ran and hand the run another directory's
+ * history. Nothing here reads the filesystem: the path may be historical,
+ * remote, or since deleted.
+ */
+function directoryForCompare(path: string, platform: NodeJS.Platform): { text: string; foldsCase: boolean } {
+  // A backslash is an ordinary character in a POSIX filename, so it is only a separator on Windows.
+  if (platform !== 'win32') return { text: path.replace(/\/+$/, ''), foldsCase: false };
+  const slashed = path.replace(/\\/g, '/');
+  const drive = DRIVE_SPELLING.exec(slashed);
+  const native = drive ? `${drive[1]}:/${slashed.slice(drive[0].length)}` : slashed;
+  return { text: native.replace(/\/+$/, ''), foldsCase: WINDOWS_DRIVE.test(native) || WINDOWS_UNC.test(native) };
+}
+
+/**
+ * `platform` is a parameter rather than read from the environment so both
+ * rule sets are exercised wherever the suite runs. In the product it is the
+ * host the hook fired on, which is the host that ran the command.
+ */
+export function sameDirectory(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
+  const x = directoryForCompare(a, platform);
+  const y = directoryForCompare(b, platform);
+  // Case is folded only when both sides are provably the same kind of Windows
+  // volume; anything else compares exactly, which can only cost a recall.
+  return x.foldsCase && y.foldsCase ? x.text.toLowerCase() === y.text.toLowerCase() : x.text === y.text;
+}
+
+function classify(segment: string, cwd: string | null, platform: NodeJS.Platform): SegmentKind {
   if (UNSAFE_SEGMENT.test(segment)) return 'target';
 
   const cd = CD_SEGMENT.exec(segment);
@@ -156,7 +185,7 @@ function classify(segment: string, cwd: string | null): SegmentKind {
     if (!cwd) return 'target';
     const to = cd[1] ?? cd[2] ?? cd[3] ?? '';
     if (to === '.') return 'navigation';
-    return sameDirectory(to, cwd) ? 'navigation' : 'target';
+    return sameDirectory(to, cwd, platform) ? 'navigation' : 'target';
   }
 
   const [head, next] = segment.split(/\s+/);
@@ -166,11 +195,11 @@ function classify(segment: string, cwd: string | null): SegmentKind {
   return 'target';
 }
 
-export function canonicalizeCommand(command: string, cwd: string | null): string {
+export function canonicalizeCommand(command: string, cwd: string | null, platform: NodeJS.Platform = process.platform): string {
   const segments = splitSegments(command);
   if (!segments) return command;
 
-  const targets = segments.filter((s) => classify(s, cwd) === 'target');
+  const targets = segments.filter((s) => classify(s, cwd, platform) === 'target');
   // Exactly one real execution, with everything around it proven inert. Zero
   // targets (a pure `ls && pwd`) has no execution to name; two or more cannot
   // be reduced to one without guessing which mattered.
