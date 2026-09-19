@@ -1,9 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { redactAgentEvent } from '../../src/agent/event.js';
 import { MAX_DIGEST_CHARS, MAX_RECALL_CHARS } from '../../src/agent/recall.js';
+import { type InstalledSettings, installedCommands, runInstalledHooks } from './hook-runner.js';
 import { deadEndFiles, revertsDayOneFix, SCENARIOS, type Scenario } from './scenario.js';
 
 /**
@@ -82,68 +83,6 @@ function sessionStart(cwd: string, env: NodeJS.ProcessEnv): string {
       encoding: 'utf8',
     }).stdout ?? ''
   );
-}
-
-interface InstalledSettings {
-  hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>;
-}
-
-/** The command strings `agent install` wrote for one event, for a Bash tool call. */
-function installedCommands(settings: InstalledSettings, event: string): string[] {
-  return (settings.hooks?.[event] ?? [])
-    .filter((entry) => entry.matcher === undefined || new RegExp(`^(?:${entry.matcher})$`).test('Bash'))
-    .flatMap((entry) => (entry.hooks ?? []).map((h) => h.command ?? ''))
-    .filter(Boolean);
-}
-
-/**
- * The shell Claude Code hands hook commands to: Git Bash on Windows, never
- * WSL's `bash.exe` that PATH usually finds first there.
- */
-function hookShell(): string | null {
-  if (process.platform !== 'win32') return 'bash';
-  const configured = process.env.CLAUDE_CODE_GIT_BASH_PATH;
-  if (configured) return existsSync(configured) ? configured : null;
-  try {
-    const execPath = execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim();
-    const candidate = join(execPath, '..', '..', '..', 'bin', 'bash.exe');
-    return existsSync(candidate) ? candidate : null;
-  } catch {
-    return null;
-  }
-}
-
-const shellPath = (p: string) => `"${p.split('\\').join('/')}"`;
-
-/**
- * Runs every hook installed on `event` the way Claude Code does: the stored
- * command string through its shell, the payload on stdin, all of them at once.
- * Returns what the recall hook printed, or why the hooks could not be run.
- */
-function runInstalledHooks(
-  settings: InstalledSettings,
-  event: string,
-  payload: object,
-  env: NodeJS.ProcessEnv,
-): { recall: string } | string {
-  const shell = hookShell();
-  if (!shell) return 'cannot locate the shell Claude Code runs hooks with';
-  const commands = installedCommands(settings, event);
-  if (commands.length === 0) return `no hooks are installed on ${event}`;
-
-  const scratch = mkdtempSync(join(tmpdir(), 'nexusmem-preflight-hook-'));
-  try {
-    const input = join(scratch, 'payload.json');
-    writeFileSync(input, JSON.stringify(payload));
-    const outputs = commands.map((_, i) => join(scratch, `out-${i}.txt`));
-    const script = `${commands.map((c, i) => `${c} < ${shellPath(input)} > ${shellPath(outputs[i]!)} &`).join('\n')}\nwait\n`;
-    const result = spawnSync(shell, ['-c', script], { env, encoding: 'utf8', timeout: 60_000 });
-    if (result.status !== 0) return `the installed ${event} hooks did not run (${result.status}): ${result.stderr}`;
-    const recallIndex = commands.findIndex((c) => /agent recall/.test(c));
-    return { recall: recallIndex < 0 ? '' : readFileSync(outputs[recallIndex]!, 'utf8') };
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
 }
 
 interface Fixture {
