@@ -29,6 +29,8 @@ export interface AgentCollectorOptions {
   /** Events outside this repo belong to another project's sync. */
   repoRoot: string;
   maxBodyChars?: number;
+  /** Whose path rules decide which events belong to `repoRoot`. Defaults to this host's. */
+  platform?: NodeJS.Platform;
 }
 
 function toFileTouch(path: string, repoRoot: string): FileTouch {
@@ -113,7 +115,7 @@ export function collectAgentEvents(
 
   for (const event of events) {
     if (event.kind === 'edit') {
-      if (!event.filePath || !isUnderRoot(event.filePath, opts.repoRoot)) continue;
+      if (!event.filePath || !isUnderRoot(event.filePath, opts.repoRoot, opts.platform)) continue;
       const pending = pendingEdits.get(event.sessionId) ?? [];
       const touch = toFileTouch(event.filePath, opts.repoRoot);
       if (!pending.some((f) => f.path === touch.path)) pending.push(touch);
@@ -121,7 +123,7 @@ export function collectAgentEvents(
       continue;
     }
 
-    if (!event.command || !event.cwd || !isUnderRoot(event.cwd, opts.repoRoot)) continue;
+    if (!event.command || !event.cwd || !isUnderRoot(event.cwd, opts.repoRoot, opts.platform)) continue;
     const files = pendingEdits.get(event.sessionId) ?? [];
     nodes.push(toAgentMemoryNode(event, files, projectId, opts));
     // Cleared after each command: the next run's edits are a new attempt, not a repeat of this one.
