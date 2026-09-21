@@ -14,6 +14,26 @@ describe('harder-eval fingerprints', () => {
     expect(fingerprints()).toEqual(fingerprints());
   });
 
+  /**
+   * The candidate frozen values, pinned so every CI host -- Windows, macOS and
+   * Linux -- has to reproduce them from its own checkout. A deliberate change
+   * to the harness updates this list; after a trial has run, a change here
+   * means the results before and after it must not be pooled.
+   */
+  it('reproduces the frozen fingerprints on this host', () => {
+    expect(fingerprints()).toEqual({
+      scenarios: '916f45e1a6ede2d5',
+      fixtures: 'd5413b3962ba02e9',
+      prompts: '3e99b2e63764ab08',
+      scorer: '0dc30aa6891c060d',
+      runner: '67562ffc8d324a92',
+      delivery: '5873effb5577d368',
+      isolation: 'efc01be13b7feb9d',
+      order: '07eb683962cbfa21',
+      design: '78d2d05b8d01789f',
+    });
+  });
+
   it('covers every artifact a trial\'s meaning depends on', () => {
     const printed = fingerprints();
     for (const key of ['scenarios', 'fixtures', 'prompts', 'scorer', 'runner', 'delivery', 'isolation', 'order', 'design']) {
@@ -28,7 +48,9 @@ describe('harder-eval fingerprints', () => {
   it('does not depend on the minute it was taken or the host it ran on', () => {
     const shape = JSON.stringify(scenarioShape(V2_SCENARIOS[0]!));
     expect(shape).not.toContain(process.cwd());
-    expect(shape).toContain('/eval/app');
+    // Every event path is rooted at the placeholder and spelled with forward slashes.
+    expect(shape).toContain('"filePath":"<root>/config/defaults.json"');
+    expect(shape).not.toContain('\\\\');
   });
 
   it('moves when the experiment moves', () => {

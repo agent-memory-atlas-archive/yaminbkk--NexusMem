@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { RawAgentEvent } from '../../src/agent/event.js';
 import { planTrials, SEED } from './order.js';
 import { V2_SCENARIOS, type V2Scenario } from './scenario.js';
 
@@ -23,7 +24,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** Fixed so the hash describes the fixture's shape, not the minute it was hashed. */
 export const FINGERPRINT_EPOCH = Date.UTC(2026, 0, 2, 3, 4, 5);
-const PLACEHOLDER_ROOT = '/eval/app';
+export const PLACEHOLDER_ROOT = '/eval/app';
 
 export const REPEATS = 7;
 
@@ -41,8 +42,38 @@ export function canonical(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
 }
 
-/** Everything about a scenario that decides what a trial means. */
-export function scenarioShape(scenario: V2Scenario): unknown {
+/**
+ * One spelling of an event path, whatever host generated it.
+ *
+ * `scenario.events` builds `filePath` with `node:path`'s `join`, so the same
+ * committed definition yields `\eval\app\config\defaults.json` on Windows and
+ * `/eval/app/config/defaults.json` on POSIX -- at 71b31f3 that made `scenarios`
+ * and `design` differ by host for byte-identical content. Normalised here, at
+ * the fingerprint boundary, and nowhere else: the runtime events keep their
+ * native paths because that is what the product's collectors receive.
+ *
+ * Only the separator and the placeholder root are rewritten. Case is kept,
+ * a drive letter is kept, and a UNC `\\server\share` stays distinct from
+ * `/server/share`: the fingerprint identifies an experiment definition and
+ * must not merge two paths that could mean different things.
+ */
+export function canonicalEventPath(path: string): string {
+  const slashed = path.split('\\').join('/');
+  if (slashed === PLACEHOLDER_ROOT) return '<root>';
+  if (slashed.startsWith(`${PLACEHOLDER_ROOT}/`)) return `<root>${slashed.slice(PLACEHOLDER_ROOT.length)}`;
+  return slashed;
+}
+
+export function canonicalEvents(events: readonly RawAgentEvent[]): unknown[] {
+  return events.map((e) => ({
+    ...e,
+    ...(e.filePath ? { filePath: canonicalEventPath(e.filePath) } : {}),
+    ...(e.cwd ? { cwd: canonicalEventPath(e.cwd) } : {}),
+  }));
+}
+
+/** Everything about a scenario that decides what a trial means, given its seeded events. */
+export function shapeWithEvents(scenario: V2Scenario, events: readonly RawAgentEvent[]): unknown {
   return {
     name: scenario.name,
     command: scenario.command,
@@ -54,8 +85,13 @@ export function scenarioShape(scenario: V2Scenario): unknown {
     noiseFiles: scenario.noiseFiles,
     primaryEndpoint: scenario.primaryEndpoint,
     history: scenario.history,
-    events: scenario.events(PLACEHOLDER_ROOT, FINGERPRINT_EPOCH),
+    events: canonicalEvents(events),
   };
+}
+
+/** Everything about a scenario that decides what a trial means. */
+export function scenarioShape(scenario: V2Scenario): unknown {
+  return shapeWithEvents(scenario, scenario.events(PLACEHOLDER_ROOT, FINGERPRINT_EPOCH));
 }
 
 export interface Fingerprints {
@@ -77,9 +113,9 @@ export function fingerprints(): Fingerprints {
     fixtures: sha(`${sourceOf('scenario.ts')}\n${sourceOf('fixture.ts')}`),
     prompts: sha(canonical(V2_SCENARIOS.map((s) => s.task))),
     scorer: sha(sourceOf('scorer.ts')),
-    runner: sha(sourceOf('run.ts')),
+    runner: sha(`${sourceOf('run.ts')}\n${sourceOf('workspace.ts')}`),
     delivery: sha(sourceOf('verify-delivery.ts')),
-    isolation: sha(sourceOf('isolation.ts')),
+    isolation: sha(`${sourceOf('isolation.ts')}\n${sourceOf('state.ts')}`),
     order: sha(canonical({ seed: SEED, repeats: REPEATS, trials: planTrials(V2_SCENARIOS.map((s) => s.name), REPEATS) })),
   };
   return { ...parts, design: sha(canonical(parts)) };

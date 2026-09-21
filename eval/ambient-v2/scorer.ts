@@ -95,8 +95,40 @@ export interface TrialScore {
 
 const leaf = (file: string): string => file.split('/').pop()!;
 
-/** Does this injection name that file, by path or by basename? */
-export const names = (text: string, file: string): boolean => text.includes(file) || text.includes(leaf(file));
+/**
+ * Path-shaped tokens in injected text. Recall prints repo-relative paths
+ * separated by `, ` and line ends (`- fixed on ... after editing config/site.json`),
+ * so a token is a maximal run of path characters, with any trailing sentence
+ * punctuation dropped.
+ */
+export function pathTokens(text: string): string[] {
+  return (text.match(/[A-Za-z0-9_.\-/\\:~]+/g) ?? [])
+    .map((t) => t.split('\\').join('/').replace(/[.:]+$/, '').replace(/^\.\//, ''))
+    .filter(Boolean);
+}
+
+const absolute = (token: string): boolean => token.startsWith('/') || /^[A-Za-z]:\//.test(token);
+
+/**
+ * Does this injection name that file? Exact, never a substring:
+ *
+ * - a token with a directory in it names the file only if it IS that
+ *   repo-relative path, or an absolute path ending in it at a component
+ *   boundary. `other/site.json` does not name `config/site.json`.
+ * - a bare basename names the file only if it equals the file's basename,
+ *   and only because the text supplied nothing more to tell them apart.
+ *   `website.json` never names `site.json`.
+ *
+ * At 71b31f3 this was `String.includes`, which let `config/website.json`
+ * count as naming `config/site.json` and would have credited the ambient arm
+ * with useful delivery it did not make.
+ */
+export function names(text: string, file: string): boolean {
+  return pathTokens(text).some((token) => {
+    if (!token.includes('/')) return token === leaf(file);
+    return token === file || (absolute(token) && token.endsWith(`/${file}`));
+  });
+}
 
 const INFINITY_INDEX = Number.POSITIVE_INFINITY;
 

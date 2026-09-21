@@ -9,7 +9,9 @@ import { checkArmSetup, checkCleanStart, checkDistinctWorkspaces, checkFreshWork
 import { planTrials, SEED, type PlannedTrial } from './order.js';
 import { V2_SCENARIOS, type V2Scenario } from './scenario.js';
 import { ARMS, scoreTrial, summariseArm, type Arm, type Injection, type TrialRecord, type TrialScore } from './scorer.js';
-import { buildDeliveryFixture, verifyDelivery, type DeliveryFixture } from './verify-delivery.js';
+import { logicalState, stateDiff } from './state.js';
+import { verifyOnTwin } from './verify-delivery.js';
+import { changedFiles } from './workspace.js';
 
 /**
  * Orchestration for the harder ambient-memory experiment.
@@ -235,11 +237,39 @@ export function readTranscript(path: string, repoDir: string): Transcript {
 
 function scoreRepo(repoDir: string, scenario: V2Scenario): { commandPasses: boolean; changed: string[] } {
   const [exe, ...rest] = scenario.command.split(' ');
-  const changed = execFileSync('git', ['-C', repoDir, 'diff', '--name-only', 'HEAD'], { encoding: 'utf8' })
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  return { commandPasses: spawnSync(exe!, rest, { cwd: repoDir, encoding: 'utf8' }).status === 0, changed };
+  return { commandPasses: spawnSync(exe!, rest, { cwd: repoDir, encoding: 'utf8' }).status === 0, changed: changedFiles(repoDir) };
+}
+
+/** The arm's own setup on the trial instance: seeded memory, and hooks for ambient. Nothing else. */
+export function setUpArm(arm: Arm, scenario: V2Scenario, paths: TrialPaths): void {
+  if (arm !== 'control') seedMemory(scenario, paths);
+  if (arm === 'ambient') cli(['agent', 'install', '--project', '-C', paths.repoDir], { ...process.env, NEXUSMEM_HOME: paths.nmHome });
+}
+
+/**
+ * The deterministic pre-flight, run between arm setup and model launch, with
+ * the trial's logical state captured on both sides of it. Delivery is proved
+ * on a disposable twin (`verifyOnTwin`); the MCP server is spoken to on the
+ * trial's own instance, and the diff below is what shows that doing so leaves
+ * nothing behind. Any difference at all is a system failure: the model must
+ * start from the seeded experiment state, not from a state a verifier wrote.
+ */
+export function preflightArm(
+  arm: Arm,
+  scenario: V2Scenario,
+  paths: TrialPaths,
+  proveDelivery: (scenario: V2Scenario, paths: TrialPaths) => string[] = (s) => verifyOnTwin(s),
+): string[] {
+  const before = logicalState(paths.repoDir, paths.nmHome);
+  const problems: string[] = [];
+  if (arm === 'ambient') problems.push(...proveDelivery(scenario, paths).map((p) => `delivery: ${p}`));
+  if (arm === 'mcp') {
+    const mcp = preflightMcp(paths);
+    if (mcp) problems.push(mcp);
+  }
+  const leaked = stateDiff(before, logicalState(paths.repoDir, paths.nmHome));
+  if (leaked.length > 0) problems.push(`pre-flight changed the trial's own state: ${leaked.join('; ')}`);
+  return problems;
 }
 
 const emptyRecord = (trial: PlannedTrial): TrialRecord => ({
@@ -301,17 +331,9 @@ function runTrial(trial: PlannedTrial, outDir: string, dryRun: boolean): { recor
   problems = checkCleanStart(paths);
   if (problems.length > 0) return fail(problems.join('; '));
 
-  if (trial.arm !== 'control') seedMemory(scenario, paths);
-  if (trial.arm === 'ambient') {
-    cli(['agent', 'install', '--project', '-C', paths.repoDir], { ...process.env, NEXUSMEM_HOME: paths.nmHome });
-    const fixture: DeliveryFixture = { ...paths, env: { ...process.env, NEXUSMEM_HOME: paths.nmHome } };
-    const delivery = verifyDelivery(scenario, fixture);
-    if (delivery.length > 0) return fail(`delivery: ${delivery.join('; ')}`);
-  }
-  if (trial.arm === 'mcp') {
-    const mcp = preflightMcp(paths);
-    if (mcp) return fail(mcp);
-  }
+  setUpArm(trial.arm, scenario, paths);
+  problems = preflightArm(trial.arm, scenario, paths);
+  if (problems.length > 0) return fail(problems.join('; '));
 
   problems = checkArmSetup(trial.arm, paths);
   if (problems.length > 0) return fail(problems.join('; '));
@@ -392,7 +414,7 @@ function main(): void {
     // Best-effort: a temp directory a just-exited child still holds open must
     // not fail the run.
     try {
-      rmSync(workspace, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     } catch {
       /* left for the operating system to reap */
     }

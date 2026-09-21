@@ -238,24 +238,58 @@ export function verifyDelivery(scenario: V2Scenario, fixture: DeliveryFixture): 
   return problems;
 }
 
+/**
+ * Removes a verification workspace. `agent session-start` spawns a detached
+ * `sync --auto` with no handle to wait on, and on Windows it can still hold
+ * the database open, so removal is retried and a leftover is reported rather
+ * than failing the gate.
+ */
+export function removeFixture(fixture: DeliveryFixture): boolean {
+  try {
+    rmSync(fixture.workspace, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Delivery proved on a disposable twin of a trial, never on the trial itself.
+ *
+ * The audit behind this: probing an instance is not read-only. Every recall
+ * that fires writes `agent-recall-state.json` under NEXUSMEM_HOME, and
+ * `agent session-start` spawns a detached `sync --auto` that -- with no
+ * `--no-embed` -- embeds every node whenever a local embedding server
+ * answers, and moves the sync timestamps and project registry. At 71b31f3
+ * all of that landed in the ambient trial's own state before the model
+ * started. The twin is built by the same function from the same frozen
+ * definition, gets the same hooks installed, and goes through the same
+ * product path; only its state is thrown away afterwards.
+ */
+export function verifyOnTwin(scenario: V2Scenario): string[] {
+  const twin = buildDeliveryFixture(scenario);
+  try {
+    cli(['agent', 'install', '--project', '-C', twin.repoDir], { env: twin.env });
+    // eslint-disable-next-line no-control-regex
+    const status = cli(['agent', 'status', '--project', '-C', twin.repoDir], { env: twin.env }).replace(/\x1b\[[0-9;]*m/g, '');
+    const problems: string[] = [];
+    if (!/installed\s+yes/.test(status)) problems.push('install: agent status does not report the hooks as installed');
+    if (/do not exist here/.test(status)) problems.push('install: the installed hook points at paths this machine does not have');
+    if (/capture\s+degraded/.test(status)) problems.push('capture: health is degraded, so events are being dropped');
+    problems.push(...verifyDelivery(scenario, twin));
+    return problems;
+  } finally {
+    if (!removeFixture(twin)) process.stderr.write(`(verification twin left behind: ${twin.workspace})\n`);
+  }
+}
+
 if (process.argv[1]?.split(/[\\/]/).pop() === 'verify-delivery.ts') {
   let failed = false;
   for (const scenario of V2_SCENARIOS) {
-    const fixture = buildDeliveryFixture(scenario);
-    try {
-      const problems = verifyDelivery(scenario, fixture);
-      process.stdout.write(`${problems.length === 0 ? 'ok  ' : 'FAIL'} ${scenario.name}\n`);
-      for (const problem of problems) process.stdout.write(`       ${problem}\n`);
-      failed ||= problems.length > 0;
-    } finally {
-      // Best-effort: on Windows the database file can still be held open by a
-      // just-exited child, and a failed temp cleanup must not fail the gate.
-      try {
-        rmSync(fixture.workspace, { recursive: true, force: true });
-      } catch {
-        process.stdout.write(`     (left behind: ${fixture.workspace})\n`);
-      }
-    }
+    const problems = verifyOnTwin(scenario);
+    process.stdout.write(`${problems.length === 0 ? 'ok  ' : 'FAIL'} ${scenario.name}\n`);
+    for (const problem of problems) process.stdout.write(`       ${problem}\n`);
+    failed ||= problems.length > 0;
   }
   process.stdout.write(failed ? '\ndelivery is NOT covered -- reject or repair the scenario\n' : '\nall scenarios deliver\n');
   process.exit(failed ? 1 : 0);

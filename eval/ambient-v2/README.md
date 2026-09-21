@@ -75,7 +75,9 @@ delivery · proactive MCP calls.
 
 An injection counts as causally useful only when **all** of:
 
-1. it names the file that fixes the check (path or basename), and
+1. it names the file that fixes the check -- its exact repo-relative path, or
+   its bare basename where the text gives no directory at all (never a
+   substring: `website.json` does not name `site.json`), and
 2. it arrived at a transcript position strictly before that file was first
    edited, and
 3. the run reached that file without first spending an edit on a disproved
@@ -186,7 +188,12 @@ differ, not whether one was passed). Differences are exactly:
 | --- | --- | --- | --- | --- |
 | `control` | no | no | no | no |
 | `mcp` | yes | yes | yes | no |
-| `ambient` | yes | yes | reachable | yes |
+| `ambient` | yes | yes | no | yes |
+
+The ambient arm is handed the empty MCP config, exactly like control: its
+only channel to the memory is the installed hooks. (The first version of this
+table said "reachable" for ambient; `claudeArgs` in `run.ts` never gave it
+that, and the table was corrected before any trial ran.)
 
 `eval/ambient-v2/isolation.ts` asserts this off the filesystem on every trial,
 not from what the runner intended.
@@ -227,7 +234,7 @@ trial.
 ```
 npm run build
 npx tsx eval/ambient-v2/verify-fixtures.ts     # fixtures are internally truthful
-npx tsx eval/ambient-v2/verify-delivery.ts     # the product can deliver each scenario
+npx tsx eval/ambient-v2/verify-delivery.ts     # the product can deliver each scenario (on disposable twins)
 npx tsx eval/ambient-v2/fingerprint.ts         # the hashes to record
 npx tsx eval/ambient-v2/run.ts --dry-run       # full orchestration, MODEL CALL COUNT 0
 ```
@@ -240,3 +247,51 @@ cannot start from a mistyped argument.
 Record the fingerprints from `fingerprint.ts` with any results. If any of them
 changes after trials begin, results from before and after describe different
 experiments and must not be pooled.
+
+The fingerprints are host-independent: event paths are canonicalised at the
+fingerprint boundary (separator and placeholder root only; case, drive letters
+and UNC shares are kept distinct), and source files are hashed with LF line
+endings. Tests build Windows-shaped and POSIX-shaped spellings of the same
+fixture explicitly and require one hash for both.
+
+## 11. Review fixes made before any trial
+
+The first design commit (`71b31f3`) was reviewed before a single model call.
+Five harness defects were found and fixed; scenario definitions, prompts,
+fixtures, seeded histories, the primary endpoint, repeats and trial order are
+unchanged by all of them.
+
+| # | defect at 71b31f3 | effect had it shipped | fix |
+| --- | --- | --- | --- |
+| F1 | event paths hashed as the host's `join` spells them | `scenarios` and `design` differed between a Windows and a POSIX host for byte-identical content | canonicalise at the fingerprint boundary only; runtime events keep native paths |
+| F2 | containment case-sensitive everywhere, uniqueness case-folded everywhere | spurious isolation failures on Windows, merged distinct paths on POSIX | fold case on win32 only; contain on whole path components |
+| F3 | delivery probed the ambient trial's own instance | the trial started with state the seeded experiment did not have (see below) | prove delivery on a disposable twin; diff the trial's logical state across the pre-flight and fail on any change |
+| F4 | `git diff --name-only HEAD` for the changed-file record | a solution that adds a new file (e.g. a config that sorts last) left no trace | `git status --porcelain -z -uall`, harness-owned paths excluded |
+| F5 | `String.includes` for "does this injection name the fix file" | `config/website.json` counted as naming `config/site.json` | exact repo-relative path, or a bare basename only when no directory is given |
+
+**F3 in detail.** A before/after logical diff of the ambient trial's own
+state around the old pre-flight found, for every scenario:
+
+- `agent-recall-state.json` created under NEXUSMEM_HOME -- written by every
+  recall that fires. Session-keyed, so a new model session would not collide
+  with it, but it is trial-visible state the seeded experiment did not have.
+- `agent session-start` spawns a detached `sync --auto`, which does not pass
+  `--no-embed`. On a host with a local embedding server it embedded every
+  node (`nodes_vec_*` rows, `meta.embedding.identity`); without one it does
+  not. The trial's starting state therefore depended on what the orchestration
+  host happened to be running. Nothing on the ambient arm's delivery path reads
+  vectors, and the ambient arm has no MCP server, so no endpoint was changed by
+  it -- but it broke the invariant that every trial starts from the seeded
+  state, and it made that state host-dependent.
+- `sync_state` timestamps, the `projects` row's last-seen time and the
+  `projects.json` registry moved -- timestamps only.
+
+After the fix the same diff is empty for the ambient and mcp pre-flights, and
+`tests/eval-v2-contamination.test.ts` proves the guard is not vacuous: probing
+the trial itself is caught, as is a single synthetic row or file.
+
+Delivery is now proved on a twin built by the same function from the same
+frozen definition, with the same hooks installed and the same product path
+exercised. What that proves is that this definition, with this build, delivers
+-- not that the trial's own bytes were probed, which is exactly what must not
+happen.

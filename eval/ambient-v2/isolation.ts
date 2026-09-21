@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 import type { Arm } from './scorer.js';
 
 /**
@@ -18,18 +18,36 @@ export interface TrialPaths {
   nmHome: string;
 }
 
-const under = (parent: string, child: string): boolean => {
-  const p = resolve(parent);
-  const c = resolve(child);
-  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
-};
+/**
+ * Path identity for the harness's own paths. Every path compared here is one
+ * the harness made itself -- `mkdtemp`, then `realpathSync.native`, then
+ * `join` -- so only native paths of the running host ever appear; this is
+ * not a comparator for paths an agent or a hook reports.
+ *
+ * Windows folds case because its filesystems do by default: `C:\Temp\Repo`
+ * and `c:\temp\repo` are one directory. POSIX is compared exactly: `/tmp/Repo`
+ * and `/tmp/repo` are two. `platform` is a parameter so both rules can be
+ * tested from either host.
+ */
+export function pathKey(path: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') return win32.resolve(path).toLowerCase();
+  return posix.resolve(path);
+}
+
+/** Containment on whole path components: `/tmp/app2` is not under `/tmp/app`. */
+export function isWithin(parent: string, child: string, platform: NodeJS.Platform = process.platform): boolean {
+  const separator = platform === 'win32' ? win32.sep : posix.sep;
+  const p = pathKey(parent, platform);
+  const c = pathKey(child, platform);
+  return c === p || c.startsWith(p.endsWith(separator) ? p : p + separator);
+}
 
 /** Before anything is built: the workspace must be new, and everything must live inside it. */
 export function checkFreshWorkspace(paths: TrialPaths, existedBefore: boolean): string[] {
   const problems: string[] = [];
   if (existedBefore) problems.push(`workspace ${paths.workspace} already existed, so it may carry another trial's state`);
-  if (!under(paths.workspace, paths.repoDir)) problems.push('the repository is not inside the trial workspace');
-  if (!under(paths.workspace, paths.nmHome)) problems.push('NEXUSMEM_HOME is not inside the trial workspace');
+  if (!isWithin(paths.workspace, paths.repoDir)) problems.push('the repository is not inside the trial workspace');
+  if (!isWithin(paths.workspace, paths.nmHome)) problems.push('NEXUSMEM_HOME is not inside the trial workspace');
   return problems;
 }
 
@@ -67,11 +85,11 @@ export function checkArmSetup(arm: Arm, paths: TrialPaths): string[] {
 }
 
 /** Across the whole run: no two trials may share a workspace. */
-export function checkDistinctWorkspaces(workspaces: readonly string[]): string[] {
+export function checkDistinctWorkspaces(workspaces: readonly string[], platform: NodeJS.Platform = process.platform): string[] {
   const seen = new Set<string>();
   const problems: string[] = [];
   for (const workspace of workspaces) {
-    const key = resolve(workspace).toLowerCase();
+    const key = pathKey(workspace, platform);
     if (seen.has(key)) problems.push(`workspace reused between trials: ${workspace}`);
     seen.add(key);
   }
