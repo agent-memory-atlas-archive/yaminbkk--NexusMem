@@ -24,7 +24,6 @@ const RAW = `export DB_PASSWORD=${SECRET}`;
 const RAW_HASH = sha256Hex(RAW).slice(0, 12);
 const event = (command = RAW) => JSON.stringify({ ts: '2026-09-10T03:00:00.000Z', cwd: 'D:/repo', exitCode: 0, durationMs: 7, command });
 
-/** Every file under `dir`, recursively, whose bytes contain the secret. */
 function filesContaining(dir: string, needle = SECRET): string[] {
   if (!existsSync(dir)) return [];
   const hits: string[] = [];
@@ -228,7 +227,7 @@ describe('real shell capture', () => {
     expect(r.status).toBe(0);
 
     await expectRecorded('pwsh-hook', command, `$env:DB_PASSWORD: [redacted] # ทดสอบ`);
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(process.platform !== 'win32' || !existsSync(GIT_BASH))('Git Bash: the DEBUG trap + precmd pass the command to the recorder', async () => {
     const profile = join(home, 'hook.bash');

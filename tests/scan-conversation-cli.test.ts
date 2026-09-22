@@ -8,7 +8,7 @@ import { readRepoInfo } from '../src/git/repo.js';
 import { gitFixture } from './helpers.js';
 
 /**
- * `nexusmem scan-conversation` (`runScanConversation`) had zero test coverage --
+ * Covers `nexusmem scan-conversation` (`runScanConversation`);
  * `tests/conversation.test.ts` only exercises the pure parser, never the real
  * directory listing. `os.homedir()` on win32 reads `USERPROFILE`, which is
  * what lets this point Claude Code's transcript directory at a temp home

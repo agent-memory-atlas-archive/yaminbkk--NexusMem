@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type AgentEvent, redactAgentEvent } from '../src/agent/event.js';
+import { recallFailure } from '../src/agent/recall.js';
 import { collectAgentEvents } from '../src/collectors/agent-events.js';
 import { correlateFailures, RESOLVED_BY_RETRY } from '../src/correlate/failure-fix.js';
 import { makeNodeId } from '../src/core/ids.js';
@@ -94,6 +95,121 @@ describe('correlateFailures: agent attempts', () => {
       .prepare(`SELECT id FROM nodes WHERE project_id = ? AND json_extract(meta,'$.exitCode') = 1`)
       .all(PROJECT) as Array<{ id: string }>;
     expect(store.getLinkedNodeIds(failure!.id, RESOLVED_BY_RETRY)).toEqual([]);
+  });
+
+  it('does not credit a later edited pass once the command already passed without an edit', () => {
+    // fail -> pass (no edit) -> edit -> pass: the failure was gone before the edit happened,
+    // so linking the edited pass would claim a cause the evidence does not show.
+    seed([
+      agentEvent({ ts: at(0) }),
+      agentEvent({ outcome: 'ok', exitCode: 0, ts: at(2) }),
+      agentEvent({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(5) }),
+      agentEvent({ outcome: 'ok', exitCode: 0, ts: at(6) }),
+    ]);
+
+    expect(correlateFailures(store, PROJECT)).toMatchObject({ failuresExamined: 1, linkedByRetry: 0, unexplainedRetries: 1 });
+    const [failure] = store.raw
+      .prepare(`SELECT id FROM nodes WHERE project_id = ? AND json_extract(meta,'$.exitCode') = 1`)
+      .all(PROJECT) as Array<{ id: string }>;
+    expect(store.getLinkedNodeIds(failure!.id, RESOLVED_BY_RETRY)).toEqual([]);
+  });
+
+  it('still links the edited pass to a failure that came back after the unexplained one', () => {
+    seed([
+      agentEvent({ ts: at(0) }),
+      agentEvent({ outcome: 'ok', exitCode: 0, ts: at(2) }),
+      agentEvent({ ts: at(3) }),
+      agentEvent({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(5) }),
+      agentEvent({ outcome: 'ok', exitCode: 0, ts: at(6) }),
+    ]);
+
+    expect(correlateFailures(store, PROJECT)).toMatchObject({ failuresExamined: 2, linkedByRetry: 1, unexplainedRetries: 1 });
+  });
+
+  describe('the same execution in different spellings', () => {
+    const WRAPPED = `cd "${ROOT}" && ${COMMAND}; echo "exit: $?"`;
+    const failureId = () =>
+      (store.raw.prepare(`SELECT id FROM nodes WHERE project_id = ? AND json_extract(meta,'$.exitCode') = 1`).get(PROJECT) as { id: string }).id;
+
+    it('links a cd-wrapped agent failure to the bare pass that followed a real edit', () => {
+      seed([
+        agentEvent({ command: WRAPPED, ts: at(0) }),
+        agentEvent({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(5) }),
+        agentEvent({ outcome: 'ok', exitCode: 0, ts: at(6) }),
+      ]);
+
+      expect(correlateFailures(store, PROJECT)).toMatchObject({ failuresExamined: 1, linkedByRetry: 1, unexplainedRetries: 0 });
+      expect(store.getLinkedNodeIds(failureId(), RESOLVED_BY_RETRY)).toHaveLength(1);
+    });
+
+    it('links a bare agent failure to a wrapped pass the same way', () => {
+      seed([
+        agentEvent({ ts: at(0) }),
+        agentEvent({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(5) }),
+        agentEvent({ command: WRAPPED, outcome: 'ok', exitCode: 0, ts: at(6) }),
+      ]);
+
+      expect(correlateFailures(store, PROJECT)).toMatchObject({ linkedByRetry: 1 });
+    });
+
+    it('still counts a wrapped pass with no edit as unexplained, never as a fix', () => {
+      seed([agentEvent({ ts: at(0) }), agentEvent({ command: WRAPPED, outcome: 'ok', exitCode: 0, ts: at(6) })]);
+
+      expect(correlateFailures(store, PROJECT)).toMatchObject({ linkedByRetry: 0, unexplainedRetries: 1 });
+    });
+
+    it('does not link agent runs whose credentials differ, however alike they read once redacted', () => {
+      seed([
+        agentEvent({ command: 'TOKEN=synthetic-aaaa1111 npm run deploy', ts: at(0) }),
+        agentEvent({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(5) }),
+        agentEvent({ command: 'TOKEN=synthetic-bbbb2222 npm run deploy', outcome: 'ok', exitCode: 0, ts: at(6) }),
+      ]);
+
+      expect(correlateFailures(store, PROJECT)).toMatchObject({ linkedByRetry: 0, unexplainedRetries: 0 });
+    });
+
+    it('never lets a passing pipeline resolve the failure of the command it pipes', () => {
+      // The pipeline's exit 0 is `head`'s. It is recorded truthfully for the pipeline's own
+      // identity, and must not be read as the piped command passing -- here or in recall.
+      seed([
+        agentEvent({ ts: at(0) }),
+        agentEvent({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(5) }),
+        agentEvent({ command: `cd "${ROOT}" && ${COMMAND} 2>&1 | head -100`, outcome: 'ok', exitCode: 0, ts: at(6) }),
+      ]);
+
+      expect(correlateFailures(store, PROJECT)).toMatchObject({ failuresExamined: 1, linkedByRetry: 0, unexplainedRetries: 0 });
+      expect(store.getLinkedNodeIds(failureId(), RESOLVED_BY_RETRY)).toEqual([]);
+      const failedHash = (store.raw.prepare(`SELECT json_extract(meta,'$.execHash') AS h FROM nodes WHERE id = ?`).get(failureId()) as { h: string }).h;
+      expect(recallFailure(store, PROJECT, failedHash)).toMatchObject({ resolved: false, stale: false, superseded: false });
+    });
+
+    it('does not resolve a failure with a pass that ran in a directory differing only by case', () => {
+      // Both directories exist on a case-sensitive filesystem, so crediting the
+      // pass would attach one directory's history to another's execution.
+      const root = '/srv/app';
+      const events = [
+        agentEvent({ command: COMMAND, cwd: root, ts: at(0) }),
+        agentEvent({ kind: 'edit', filePath: `${root}/src/a.ts`, cwd: root, outcome: 'ok', exitCode: null, ts: at(5) }),
+        agentEvent({ command: `cd "${root.replace('/app', '/App')}" && ${COMMAND}`, cwd: root, outcome: 'ok', exitCode: 0, ts: at(6) }),
+      ];
+      store.upsertNodes(collectAgentEvents(events, PROJECT, { repoRoot: root }));
+
+      expect(correlateFailures(store, PROJECT)).toMatchObject({ failuresExamined: 1, linkedByRetry: 0 });
+      const failure = store.raw
+        .prepare(`SELECT id FROM nodes WHERE project_id = ? AND json_extract(meta,'$.exitCode') = 1`)
+        .get(PROJECT) as { id: string };
+      expect(store.getLinkedNodeIds(failure.id, RESOLVED_BY_RETRY)).toEqual([]);
+    });
+
+    it('does not link a different execution that happens to share the wrapper', () => {
+      seed([
+        agentEvent({ command: WRAPPED, ts: at(0) }),
+        agentEvent({ kind: 'edit', filePath: `${ROOT}/src/a.ts`, outcome: 'ok', exitCode: null, ts: at(5) }),
+        agentEvent({ command: `cd "${ROOT}" && npm run build; echo "exit: $?"`, outcome: 'ok', exitCode: 0, ts: at(6) }),
+      ]);
+
+      expect(correlateFailures(store, PROJECT)).toMatchObject({ linkedByRetry: 0 });
+    });
   });
 
   it('still links human shell history, which never records files', () => {

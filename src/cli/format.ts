@@ -7,10 +7,8 @@ import type { MemoryNode } from '../core/types.js';
  *
  * These commands all print one line per candidate node, led by its signal, so
  * a user can eyeball what a collector would ingest before committing to a
- * sync. The signal column previously existed as four near-identical private
- * copies, which had already drifted: three graded high signal green while
- * `scan-shell` graded it red, so the same column meant opposite things
- * depending on which command produced it.
+ * sync. The signal column lives here, in one copy, so the same grading means
+ * the same thing whichever command produced the line.
  */
 
 /**

@@ -78,7 +78,6 @@ const passed = (command: string, id: string) => ({
   duration_ms: 900,
 });
 
-/** Every file under `dir` whose bytes contain the secret. */
 function filesContaining(dir: string, needle = SECRET): string[] {
   if (!existsSync(dir)) return [];
   const hits: string[] = [];
@@ -145,13 +144,11 @@ describe('ambient memory, day 1 to day 7', () => {
     expect(injected.hookEventName).toBe('PostToolUseFailure');
     const text: string = injected.additionalContext;
 
-    // It knows both dead ends, and what actually fixed it.
     expect(text).toContain('failed in this repository before');
     expect(text).toContain('a.ts');
     expect(text).toContain('b.ts');
     expect(text).toContain('fixed on');
     expect(text).toContain('c.ts');
-    // And it stays cheap enough to be automatic.
     expect(text.length).toBeLessThanOrEqual(MAX_RECALL_CHARS);
   });
 
@@ -167,7 +164,7 @@ describe('ambient memory, day 1 to day 7', () => {
     expect(out.join('')).toBe('');
   });
 
-  it('opens a later session by naming what is still unfixed, and says nothing once it is fixed', async () => {
+  it('opens a later session by naming what is still unfixed, then names the fix once it is one', async () => {
     await runHook(edit('a.ts'));
     await runHook(failed(FAILING, 'run-1'));
     await runSync({ cwd: repo, full: false, rebuild: false, quiet: true, noEmbed: true });
@@ -179,18 +176,23 @@ describe('ambient memory, day 1 to day 7', () => {
       startSync: () => {},
     });
     expect(unresolved.join('')).toContain(FAILING);
+    expect(unresolved.join('')).toContain('no recorded fix');
 
     await runHook(edit('c.ts'));
     await runHook(passed(FAILING, 'run-2'));
     await runSync({ cwd: repo, full: false, rebuild: false, quiet: true, noEmbed: true });
 
+    // Once fixed, the digest now names the fix rather than falling silent --
+    // the Phase-5 eval's own finding was that staying silent here excluded the
+    // single most useful thing NexusMem can say ("this failed, here's the fix").
     const resolved: string[] = [];
     await runAgentSessionStart({
       input: JSON.stringify({ session_id: 's2', cwd: repo, hook_event_name: 'SessionStart', source: 'startup' }),
       out: (c) => resolved.push(c),
       startSync: () => {},
     });
-    expect(resolved.join('')).toBe('');
+    expect(resolved.join('')).toContain(FAILING);
+    expect(resolved.join('')).toContain('fixed');
   });
 
   it('never writes a raw secret to any NexusMem-owned file, all the way through to what is injected', async () => {

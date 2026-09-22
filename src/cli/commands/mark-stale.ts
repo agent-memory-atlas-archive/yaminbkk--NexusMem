@@ -13,7 +13,6 @@ export interface MarkStaleOptions {
   cwd: string;
   /** Id of the node being marked stale. */
   nodeId: string;
-  /** Id of the node that supersedes it. */
   supersedesId: string;
   out?: (chunk: string) => void;
 }

@@ -1,21 +1,19 @@
 import type Database from 'better-sqlite3';
+import { REDACTION_MARK } from '../conversation/redact.js';
 import { significantTokens } from '../store/fts.js';
 import type { MemoryStore } from '../store/store.js';
 
 /**
- * Links a failed `shell_command` node to whatever later resolved it --
- * Phase 7's "failure -> fix chain" building block. Two independent,
- * deliberately narrow heuristics; a failure can be linked by either, both,
- * or neither. Both are unvalidated until dogfooded against a real corpus
- * (see ROADMAP.local.md's Phase 7 entry) -- this is a first pass sized for
- * that validation, not a claim that either heuristic is correct yet.
+ * Links a failed `shell_command` node to whatever later resolved it. Two
+ * independent, deliberately narrow heuristics; a failure can be linked by
+ * either, both, or neither.
  *
  * - **Same-command retry.** A later `shell_command` in the same project and
  *   `cwd`, the *exact* normalized command text (trim + collapse whitespace +
- *   lowercase), `exitCode === 0`, within `retryWindowMs`. High precision by
+ *   lowercase) -- or, when both rows are agent-recorded, the same `execHash`
+ *   -- `exitCode === 0`, within `retryWindowMs`. High precision by
  *   construction, low recall: a fix that changes the command itself (a typo
- *   correction, an added flag) is invisible to an exact-text match. Not
- *   attempted here -- fuzzy matching is a stretch goal, not this pass's job.
+ *   correction, an added flag) is invisible to an exact-text match.
  *   For agent-recorded pairs one more thing is known -- which files the agent
  *   changed -- so an identical command that passes with nothing edited in
  *   between is counted as unexplained rather than linked: the pass is real,
@@ -24,40 +22,19 @@ import type { MemoryStore } from '../store/store.js';
  * - **Conversation bridge.** The best FTS match (AND of every significant,
  *   non-boilerplate token in the failing command) among
  *   `conversation_turn`/`session_summary` nodes in the following
- *   `discussionWindowMs`. Originally used an OR-of-tokens match and was
- *   dogfooded against this repo's real history 2026-08-15: roughly half
- *   the links were wrong, and the confirmed false positives were all driven
- *   by a single shared generic token (e.g. an "npm whoami" failure linked to
- *   an unrelated summary that just happens to mention "npm"). Tightened to
- *   AND -- still loose in the other direction, since a discussion that
- *   paraphrases the command instead of naming its words will not match, but
- *   an unvalidated false positive is worse than a missed true positive here.
- *   Does not chain further to whatever commit that conversation might cite;
- *   linking failure -> discussion is the whole claim this heuristic makes.
+ *   `discussionWindowMs`. AND rather than OR, because a single shared generic
+ *   token (an "npm whoami" failure against any turn mentioning "npm") linked
+ *   roughly half of a dogfooded sample wrongly; a missed true positive is
+ *   preferable to a confident false one here. Does not chain further to
+ *   whatever commit that conversation might cite; linking failure ->
+ *   discussion is the whole claim this heuristic makes.
  *
- *   Re-dogfooded at larger scale 2026-08-16 against a second real project
- *   (`villa-bot`, previously unseen by this heuristic): the AND fix held on
- *   this repo's own 5 links (still 5/5 correct) but missed a new false-
- *   positive class the small original sample never surfaced -- a command
- *   made entirely of the tool's own boilerplate words (`nexusmem sync`)
- *   AND-matched an unrelated turn that just happened to show the same
- *   command as generic advice. bm25 score could not separate this from a
- *   true positive (measured: the false positive scored -9.685, *stronger*
- *   than two real true positives at -5.899/-6.559) -- bm25 rewards rarity
- *   *within whatever corpus it's run against*, and in villa-bot's smaller
- *   corpus those words hadn't accumulated enough occurrences to be
- *   recognized as boilerplate, even though the same words measure 33-39%
- *   document frequency in this repo's own (more self-referential) history.
- *   `filterBoilerplateTokens` below adds that corpus-relative check as a
- *   second filtering pass. Note honestly: at villa-bot's actual measured
- *   frequency for those words (9.3%/4.6%, comfortably under the threshold),
- *   this pass does *not* retroactively catch that specific instance -- it
- *   was a low-frequency AND-coincidence, not corpus saturation. What it does
- *   protect against is the class the numbers actually support: a command
- *   whose words are truly ubiquitous in a project's own history (like this
- *   repo's own name/verbs), which the villa-bot corpus wasn't saturated with
- *   yet but plausibly will be over time, and which this repo's corpus
- *   already is.
+ *   A command made entirely of the tool's own boilerplate words (`nexusmem
+ *   sync`) still AND-matches unrelated turns, and bm25 cannot separate that
+ *   from a true positive: it rewards rarity within whatever corpus it runs
+ *   against. `filterBoilerplateTokens` below adds a corpus-relative document
+ *   frequency check as a second filtering pass, which catches words that are
+ *   ubiquitous in a project's own history rather than every coincidence.
  */
 
 export interface CorrelateOptions {
@@ -98,6 +75,10 @@ interface FailureRow {
   id: string;
   ts_epoch: number;
   command: string | null;
+  /** Hash of the raw, pre-redaction command; absent on rows written before it was recorded. */
+  command_hash: string | null;
+  /** Agent rows only: the execution the command reduces to, across cd and exit-echo wrappers. */
+  exec_hash: string | null;
   cwd: string | null;
   source: string | null;
 }
@@ -194,7 +175,9 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
 
   const failures = db
     .prepare(
-      `SELECT id, ts_epoch, source, json_extract(meta, '$.command') AS command, json_extract(meta, '$.cwd') AS cwd
+      `SELECT id, ts_epoch, source, json_extract(meta, '$.command') AS command,
+              json_extract(meta, '$.commandHash') AS command_hash, json_extract(meta, '$.execHash') AS exec_hash,
+              json_extract(meta, '$.cwd') AS cwd
        FROM nodes
        WHERE project_id = ? AND kind = 'shell_command'
          AND source_ts IS NOT NULL
@@ -213,8 +196,13 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
        AND json_extract(n.meta, '$.exitCode') = 0
        AND json_extract(n.meta, '$.cwd') IS NOT NULL
        AND n.ts_epoch > ? AND n.ts_epoch <= ?
-       AND lower(trim(json_extract(n.meta, '$.command'))) = ?
        AND (json_extract(n.meta, '$.cwd') IS ? OR json_extract(n.meta, '$.cwd') = ?)
+       AND CASE
+         WHEN ? IS NOT NULL AND json_extract(n.meta, '$.execHash') IS NOT NULL
+           THEN json_extract(n.meta, '$.execHash') = ?
+         ELSE lower(trim(json_extract(n.meta, '$.command'))) = ?
+           AND (? IS NULL OR json_extract(n.meta, '$.commandHash') = ?)
+       END
      ORDER BY n.ts_epoch ASC LIMIT 1`,
   );
 
@@ -234,21 +222,35 @@ export function correlateFailures(store: MemoryStore, projectId: string, opts: C
   for (const failure of failures) {
     if (!failure.command) continue;
 
-    const retry = findRetry.get(
-      projectId,
-      failure.ts_epoch,
-      failure.ts_epoch + retryWindowMs,
-      normalizeCommand(failure.command),
-      failure.cwd,
-      failure.cwd,
-    ) as RetryRow | undefined;
+    // Two agent rows compare by execHash, so `cd "<cwd>" && cmd; echo "exit: $?"` and a bare `cmd` are
+    // one execution. Anything else compares text as before. Redaction can make different raw commands
+    // (TOKEN=a cmd, TOKEN=b cmd) store identical text, so a redacted command must also match on the
+    // raw-command hash; without one ('' never matches) the text comparison is ambiguous and fails.
+    const redacted = failure.command.includes(REDACTION_MARK);
+    const requiredHash = redacted ? (failure.command_hash ?? '') : null;
+    const retry =
+      redacted && !failure.command_hash && !failure.exec_hash
+        ? undefined
+        : (findRetry.get(
+            projectId,
+            failure.ts_epoch,
+            failure.ts_epoch + retryWindowMs,
+            failure.cwd,
+            failure.cwd,
+            failure.exec_hash,
+            failure.exec_hash,
+            normalizeCommand(failure.command),
+            requiredHash,
+            requiredHash,
+          ) as RetryRow | undefined);
     if (retry) {
       // An attempt is files changed + execution + result. For agent-recorded
       // runs all three are known, so an identical command that suddenly passes
       // with nothing edited in between is not evidence of a fix -- it is a
       // flake or a change of environment. Ambiguous beats a confident false
       // link. Human shell history records no files at all, so this can only be
-      // asked of agent-recorded pairs.
+      // asked of agent-recorded pairs. Only the earliest pass is considered, deliberately: once the
+      // command passed unexplained, a later edited pass cannot be credited with fixing this failure.
       const bothAgentRecorded = isAgentSource(failure.source) && isAgentSource(retry.source);
       if (bothAgentRecorded && retry.file_count === 0) {
         unexplainedRetries += 1;

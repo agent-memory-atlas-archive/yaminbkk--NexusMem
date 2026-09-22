@@ -119,7 +119,6 @@ export class MemoryStore {
     return listOtherProjectIds(this.db, currentProjectId);
   }
 
-  /** Total nodes held under the given project identities. */
   countProjectNodes(projectIds: readonly string[]): number {
     return countProjectNodes(this.db, projectIds);
   }

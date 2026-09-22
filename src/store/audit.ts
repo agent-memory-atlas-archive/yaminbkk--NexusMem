@@ -21,9 +21,8 @@ export interface MutationAuditInput {
  * Record one row in `mutation_audit`. `forget` already writes its own (it
  * needs the two-phase insert-then-update shape for the tombstone FK); this
  * is the same table for every other destructive/coarse operation --
- * currently `--prune-source`/`--prune-stale-shell`, which previously left no
- * record at all that a source-level delete had happened, flagged by an
- * external review (docs/forget-mechanism.md has the fuller history).
+ * currently `--prune-source`/`--prune-stale-shell`, so a source-level delete
+ * leaves a record too (see docs/forget-mechanism.md).
  */
 export function recordMutationAudit(db: Database, input: MutationAuditInput): number {
   return Number(

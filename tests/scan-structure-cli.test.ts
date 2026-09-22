@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runScanStructure } from '../src/cli/commands/scan-structure.js';
 import { gitFixture } from './helpers.js';
 
-/** `nexusmem scan-structure` (`runScanStructure`) had zero test coverage. */
+/** Covers `nexusmem scan-structure` (`runScanStructure`). */
 
 const GIT_ENV = {
   ...process.env,

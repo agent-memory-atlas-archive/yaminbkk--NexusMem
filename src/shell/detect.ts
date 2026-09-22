@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
+import { posix, win32 } from 'node:path';
 import { sha256Hex } from '../core/ids.js';
 import { readHookLog, type HookLogEntry, type HookShellKind } from './hook-log.js';
 import { parseBashHistory } from './parse-bash.js';
@@ -30,14 +31,46 @@ export interface CollectShellHistoryOptions {
    * the hook only covers PowerShell. Default true.
    */
   preferHook?: boolean;
+  /** Whose path rules decide which hook entries belong to `repoRoot`. Defaults to this host's. */
+  platform?: NodeJS.Platform;
 }
 
-/** Also used by the agent-event collector, which scopes by cwd the same way. */
-export function isUnderRoot(cwd: string, root: string): boolean {
-  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  const c = norm(cwd);
-  const r = norm(root);
-  return c === r || c.startsWith(`${r}/`);
+/**
+ * One path in the form project admission decides on: lexically normalised by
+ * the host's own path rules (`..` resolved, repeated separators collapsed), a
+ * trailing separator dropped unless it is the filesystem root, and case folded
+ * only on Windows, whose volumes fold it. A backslash is a separator only on
+ * Windows; on POSIX it is an ordinary filename character. Nothing here touches
+ * the filesystem -- the path may be historical or since deleted -- so symlinks
+ * are not resolved.
+ */
+function forAdmission(path: string, platform: NodeJS.Platform): { text: string; sep: string } {
+  const impl = platform === 'win32' ? win32 : posix;
+  let text = impl.normalize(path);
+  const root = impl.parse(text).root;
+  if (text.length > root.length) text = text.replace(platform === 'win32' ? /[\\/]+$/ : /\/+$/, '');
+  return { text: platform === 'win32' ? text.toLowerCase() : text, sep: impl.sep };
+}
+
+/**
+ * Whether an event at `cwd` belongs to the repository at `root`: the project
+ * admission boundary for both the shell and the agent-event collector.
+ *
+ * It used to fold case and read every backslash as a separator everywhere, so
+ * on a case-sensitive filesystem `/home/dev/Repo` was admitted into
+ * `/home/dev/repo`'s history, and `/repo/src/../../other` passed as inside
+ * `/repo`. Wrong admission puts another project's commands into this one's
+ * recall and digest, while a missed event only costs a recall, so anything
+ * whose identity cannot be proven from the path alone stays out: macOS is
+ * compared case-sensitively though its volumes are usually not, and Git Bash
+ * (`/c/...`) or WSL (`/mnt/c/...`) spellings never match a Windows root, as
+ * before. `platform` is the host the hooks ran on, which is the host syncing.
+ */
+export function isUnderRoot(cwd: string, root: string, platform: NodeJS.Platform = process.platform): boolean {
+  const c = forAdmission(cwd, platform);
+  const r = forAdmission(root, platform);
+  if (c.text === r.text) return true;
+  return c.text.startsWith(r.text.endsWith(r.sep) ? r.text : r.text + r.sep);
 }
 
 function hookEntryToRaw(e: HookLogEntry): RawShellEntry {
@@ -68,7 +101,6 @@ async function tryReadScrapeSource(
   return parse(raw, stats.mtimeMs, { tailLines });
 }
 
-/** Enumerate and read every shell-history source available on this machine. */
 export async function collectAvailableShellHistory(opts: CollectShellHistoryOptions = {}): Promise<ShellSourceResult[]> {
   const results: ShellSourceResult[] = [];
   const tailLines = opts.tailLines ?? 300;
@@ -87,7 +119,7 @@ export async function collectAvailableShellHistory(opts: CollectShellHistoryOpti
     const fromLine = Number(opts.hookCursor ?? '0') || 0;
     const { entries, totalLines, shellsSeen: seen } = await readHookLog(hookPath, fromLine);
     shellsSeen = seen;
-    const scoped = opts.repoRoot ? entries.filter((e) => isUnderRoot(e.cwd, opts.repoRoot!)) : entries;
+    const scoped = opts.repoRoot ? entries.filter((e) => isUnderRoot(e.cwd, opts.repoRoot!, opts.platform)) : entries;
     results.push({ name: 'pwsh-hook', entries: scoped.map(hookEntryToRaw), cursorAfter: String(totalLines) });
   }
 

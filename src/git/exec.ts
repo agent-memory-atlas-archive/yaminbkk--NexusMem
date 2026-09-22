@@ -18,9 +18,8 @@ export class GitError extends Error {
  *
  * Worth its own type because the two have nothing in common diagnostically:
  * a `GitError` is git's own verdict about the repository, while this means we
- * never got git's opinion. Collapsing them is what previously let a failed
- * process spawn be reported as "not a git repository", pointing the user at
- * their repo when the repo was fine.
+ * never got git's opinion. Collapsing them reports a failed process spawn as
+ * "not a git repository", pointing the user at a repo that is fine.
  */
 export class GitSpawnError extends Error {
   constructor(
@@ -265,9 +264,8 @@ async function* runGitOnce(cwd: string, args: string[], opts: GitExecOptions): A
       );
     }
 
-    // Lead with git's own first line: now that callers no longer rewrite every
-    // failure into "not a git repository", this message is what the user sees
-    // for the cases that aren't specifically handled.
+    // Lead with git's own first line: this message is what the user sees for
+    // every failure the cases above do not handle specifically.
     const detail = trimmed.split('\n')[0];
     throw new GitError(
       `git ${args.join(' ')} exited with code ${code}${detail ? `: ${detail}` : ''}`,

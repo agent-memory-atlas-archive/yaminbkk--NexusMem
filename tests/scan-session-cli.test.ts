@@ -8,7 +8,7 @@ import { readRepoInfo } from '../src/git/repo.js';
 import { gitFixture } from './helpers.js';
 
 /**
- * `nexusmem scan-session` (`runScanSession`) had zero test coverage. Only the
+ * Covers `nexusmem scan-session` (`runScanSession`). Only the
  * `--dry-run` and no-transcripts paths are covered here -- the real
  * summarization path constructs `new OllamaChatProvider(...)` inline (not
  * injectable) and needs a live Ollama, which tests/slm-provider.test.ts

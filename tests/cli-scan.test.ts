@@ -18,10 +18,9 @@ import type { MemoryNode } from '../src/core/types.js';
  * same label -- "~N tokens if sent raw" -- as the headline number a user reads
  * to judge how much context NexusMem is saving them.
  *
- * All four now go through the one shared `approxTotalTokens` in `cli/format.ts`
+ * All four go through the one shared `approxTotalTokens` in `cli/format.ts`
  * (git and diff via `summarize`, the other three directly), so this pins that
- * the total it computes still lines up with `approxTokens` applied per node --
- * the two used to diverge when `scan-git` reimplemented the sum inline.
+ * the total it computes lines up with `approxTokens` applied per node.
  */
 
 function node(body: string): MemoryNode {
@@ -72,10 +71,8 @@ describe('approxTotalTokens', () => {
 });
 
 /**
- * `scan-git`, `scan-shell`, `scan-conversation` and `scan-docs` each used to
- * carry a private `signalColor`. They had drifted: `scan-shell` graded high
- * signal red where the other three graded it green, so the leading column of
- * the same report meant opposite things depending on the subcommand.
+ * All four subcommands share one `signalColor`, so the leading column of the
+ * report means the same thing whichever one produced it.
  *
  * The cutoffs legitimately differ (collectors do not score on one scale), so
  * these assert the thresholds per source and the shared color language once.

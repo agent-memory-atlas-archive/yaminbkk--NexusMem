@@ -284,3 +284,26 @@ The target is a history detailed enough that a future maintainer can use
 how the feature evolved.
 
 Do not push, tag, publish, or release unless explicitly requested.
+
+## NexusMem Usage
+
+When you are uncertain about prior project decisions, previous bugs, failed
+approaches, historical fixes, or why the current code is structured a certain
+way, consult NexusMem before guessing.
+
+Use NexusMem especially before:
+- retrying an approach that may have failed before
+- debugging a recurring failure
+- changing behavior that looks intentional
+- reversing or replacing an earlier design decision
+- making assumptions about project history that are not visible in the current code
+
+Do not query NexusMem mechanically on every prompt.
+
+Use it when historical context could materially change the decision you are
+about to make.
+
+Prefer one focused retrieval over broad repeated searches.
+
+Treat retrieved memory as evidence, not ground truth.
+Verify important claims against the current code, tests, and git history.

@@ -115,19 +115,14 @@ export interface SyncProjectOutput {
 }
 
 /**
- * Collects `runInit`/`runSync`'s summary through an explicit sink rather than
- * by reassigning `process.stdout.write`, which is what this used to do.
+ * Collects `runInit`/`runSync`'s summary through an explicit sink, never by
+ * reassigning `process.stdout.write`.
  *
- * That mattered more than it looked: under the stdio transport, `stdout` *is*
- * the JSON-RPC channel. `StdioServerTransport` holds the stream object and
- * resolves `.write` at send time, so a patched `write` also intercepts
- * protocol traffic -- a response emitted while a sync was running would land
- * in the capture buffer, and the patch's unconditional `return true` would
- * report it as delivered. Overlapping syncs compounded it: the second call
- * saved the first call's patch as "the original" and restored that instead.
- *
- * Passing a sink keeps the single shared implementation (the reason for the
- * original trade) without borrowing a global that something else owns.
+ * Under the stdio transport, `stdout` *is* the JSON-RPC channel.
+ * `StdioServerTransport` holds the stream object and resolves `.write` at send
+ * time, so a patched `write` also intercepts protocol traffic: a response
+ * emitted while a sync was running lands in the capture buffer instead of
+ * reaching the client.
  *
  * Always runs `init` first: an MCP client has no reason to know this tool
  * needs a separate init step, and `runInit` is already a safe no-op (just a

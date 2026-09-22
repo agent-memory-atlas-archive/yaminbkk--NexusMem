@@ -33,7 +33,6 @@ export function listOtherProjectIds(db: Database, currentProjectId: string): str
   );
 }
 
-/** Total nodes held under the given project identities. */
 export function countProjectNodes(db: Database, projectIds: readonly string[]): number {
   if (projectIds.length === 0) return 0;
   const placeholders = projectIds.map(() => '?').join(', ');

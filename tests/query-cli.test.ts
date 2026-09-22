@@ -10,7 +10,7 @@ import { runInit } from '../src/cli/commands/init.js';
 import type { MemoryNode } from '../src/core/types.js';
 
 /**
- * `nexusmem query` (`runQuery`) had zero test coverage. `--no-vector` is used
+ * Covers `nexusmem query` (`runQuery`). `--no-vector` is used
  * throughout so this never needs a live Ollama for embeddings. The
  * `--all-projects` path is deliberately not covered here -- its merge/scoping
  * behavior is already covered by tests/cross-project.test.ts; the only thing
