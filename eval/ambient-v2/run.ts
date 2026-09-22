@@ -4,7 +4,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { redactAgentEvent } from '../../src/agent/event.js';
 import { repoRelative } from '../ambient/paths.js';
-import { fingerprints, REPEATS } from './fingerprint.js';
+import { fingerprints, productFingerprints, REPEATS } from './fingerprint.js';
 import { checkArmSetup, checkCleanStart, checkDistinctWorkspaces, checkFreshWorkspace, type TrialPaths } from './isolation.js';
 import { planTrials, SEED, type PlannedTrial } from './order.js';
 import { V2_SCENARIOS, type V2Scenario } from './scenario.js';
@@ -391,11 +391,12 @@ function main(): void {
 
   const plan = planTrials(V2_SCENARIOS.map((s) => s.name), REPEATS);
   const prints = fingerprints();
-  writeFileSync(join(outDir, 'manifest.json'), JSON.stringify({ seed: SEED, repeats: REPEATS, model: MODEL, maxTurns: MAX_TURNS, fingerprints: prints, trials: plan }, null, 2));
+  const product = productFingerprints(resolve('.'));
+  writeFileSync(join(outDir, 'manifest.json'), JSON.stringify({ seed: SEED, repeats: REPEATS, model: MODEL, maxTurns: MAX_TURNS, fingerprints: prints, product, trials: plan }, null, 2));
 
   process.stdout.write(
     `\nharder ambient-memory eval${dryRun ? ' (DRY RUN)' : ''}: ${V2_SCENARIOS.length} scenarios x ${REPEATS} repeats x ${ARMS.length} arms = ${plan.length} trials\n` +
-      `  design fingerprint: ${prints.design}\n  out: ${outDir}\n\n`,
+      `  design fingerprint: ${prints.design}\n  product: source ${product.source ?? 'missing'}, build ${product.build ?? 'missing'}\n  out: ${outDir}\n\n`,
   );
 
   const records: TrialRecord[] = [];

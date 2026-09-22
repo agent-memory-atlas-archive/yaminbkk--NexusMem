@@ -248,6 +248,13 @@ Record the fingerprints from `fingerprint.ts` with any results. If any of them
 changes after trials begin, results from before and after describe different
 experiments and must not be pooled.
 
+`design` covers the experiment definition only. The product the trials run is
+recorded next to it in `manifest.json` as `product.source` (every file under
+`src/`) and `product.build` (every file under `dist/`, which is what the trials
+execute). Pool two runs only when `design`, `product.source` and
+`product.build` all match: a product change can move delivery or MCP behaviour
+without touching the harness.
+
 The fingerprints are host-independent: event paths are canonicalised at the
 fingerprint boundary (separator and placeholder root only; case, drive letters
 and UNC shares are kept distinct), and source files are hashed with LF line

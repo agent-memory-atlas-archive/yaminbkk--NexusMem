@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { RawAgentEvent } from '../../src/agent/event.js';
 import { planTrials, SEED } from './order.js';
@@ -121,7 +121,43 @@ export function fingerprints(): Fingerprints {
   return { ...parts, design: sha(canonical(parts)) };
 }
 
+/**
+ * One hash over every file under `dir`, or null when `dir` does not exist.
+ *
+ * Keys are relative paths split on the host's own separator only, so a POSIX
+ * name containing `\` stays one component. Contents are hashed with LF line
+ * endings, as in `sourceOf`.
+ */
+export function treeHash(dir: string): string | null {
+  if (!existsSync(dir)) return null;
+  const files = readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .filter((rel) => statSync(join(dir, rel)).isFile())
+    .map((rel) => [rel.split(sep).join('/'), sha(readFileSync(join(dir, rel), 'utf8').split('\r\n').join('\n'))] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return sha(canonical(files));
+}
+
+/**
+ * The product a trial exercises, kept apart from `design`.
+ *
+ * `design` identifies the experiment definition and is frozen in a test; the
+ * product under test changes with every commit to `src/`. Two runs may be
+ * pooled only when `design` and both of these match. `build` is what the
+ * trials actually executed, so a stale `dist/` shows up as a `build` that
+ * differs between runs with the same `source`.
+ */
+export interface ProductFingerprints {
+  source: string | null;
+  build: string | null;
+}
+
+export function productFingerprints(root: string): ProductFingerprints {
+  return { source: treeHash(join(root, 'src')), build: treeHash(join(root, 'dist')) };
+}
+
 if (process.argv[1]?.split(/[\\/]/).pop() === 'fingerprint.ts') {
   const printed = fingerprints();
   for (const [name, hash] of Object.entries(printed)) process.stdout.write(`${name.padEnd(11)} ${hash}\n`);
+  const product = productFingerprints(join(HERE, '..', '..'));
+  process.stdout.write(`\nproduct\n  source    ${product.source ?? 'missing'}\n  build     ${product.build ?? 'missing (run npm run build)'}\n`);
 }

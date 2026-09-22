@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { canonical, fingerprints, scenarioShape } from '../eval/ambient-v2/fingerprint.js';
+import { canonical, fingerprints, productFingerprints, scenarioShape, treeHash } from '../eval/ambient-v2/fingerprint.js';
 import { V2_SCENARIOS } from '../eval/ambient-v2/scenario.js';
 
 /**
@@ -26,11 +29,11 @@ describe('harder-eval fingerprints', () => {
       fixtures: 'd5413b3962ba02e9',
       prompts: '3e99b2e63764ab08',
       scorer: '0dc30aa6891c060d',
-      runner: '67562ffc8d324a92',
+      runner: '3ce507e220d3e736',
       delivery: '5873effb5577d368',
       isolation: 'efc01be13b7feb9d',
       order: '07eb683962cbfa21',
-      design: '78d2d05b8d01789f',
+      design: 'd51fcec6f6a5ae9b',
     });
   });
 
@@ -62,5 +65,62 @@ describe('harder-eval fingerprints', () => {
   it('canonicalises key order, so re-ordering a definition cannot move a hash', () => {
     expect(canonical({ b: 1, a: [2, { d: 3, c: 4 }] })).toBe(canonical({ a: [2, { c: 4, d: 3 }], b: 1 }));
     expect(canonical({ a: 1, b: undefined })).toBe(canonical({ a: 1 }));
+  });
+});
+
+describe('harder-eval product fingerprints', () => {
+  function withRepo(fn: (root: string) => void): void {
+    const root = mkdtempSync(join(tmpdir(), 'nm-product-print-'));
+    try {
+      mkdirSync(join(root, 'src', 'agent'), { recursive: true });
+      writeFileSync(join(root, 'src', 'agent', 'event.ts'), 'export const a = 1;\n');
+      writeFileSync(join(root, 'src', 'index.ts'), 'export * from "./agent/event.js";\n');
+      fn(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('moves when a product source file changes, while design stays put', () => {
+    withRepo((root) => {
+      const before = productFingerprints(root);
+      const design = fingerprints().design;
+      writeFileSync(join(root, 'src', 'agent', 'event.ts'), 'export const a = 2;\n');
+      expect(productFingerprints(root).source).not.toBe(before.source);
+      expect(fingerprints().design).toBe(design);
+    });
+  });
+
+  it('moves when a product file is added or renamed', () => {
+    withRepo((root) => {
+      const before = treeHash(join(root, 'src'));
+      writeFileSync(join(root, 'src', 'extra.ts'), '');
+      const added = treeHash(join(root, 'src'));
+      expect(added).not.toBe(before);
+      rmSync(join(root, 'src', 'extra.ts'));
+      writeFileSync(join(root, 'src', 'other.ts'), '');
+      expect(treeHash(join(root, 'src'))).not.toBe(added);
+    });
+  });
+
+  it('records the build separately, and null when it has not been built', () => {
+    withRepo((root) => {
+      expect(productFingerprints(root).build).toBeNull();
+      mkdirSync(join(root, 'dist', 'cli'), { recursive: true });
+      writeFileSync(join(root, 'dist', 'cli', 'index.js'), 'console.log(1);\n');
+      const built = productFingerprints(root);
+      expect(built.build).toMatch(/^[0-9a-f]{16}$/);
+      writeFileSync(join(root, 'dist', 'cli', 'index.js'), 'console.log(2);\n');
+      expect(productFingerprints(root).build).not.toBe(built.build);
+      expect(productFingerprints(root).source).toBe(built.source);
+    });
+  });
+
+  it('does not depend on line endings', () => {
+    withRepo((root) => {
+      const lf = treeHash(join(root, 'src'));
+      writeFileSync(join(root, 'src', 'index.ts'), 'export * from "./agent/event.js";\r\n');
+      expect(treeHash(join(root, 'src'))).toBe(lf);
+    });
   });
 });
