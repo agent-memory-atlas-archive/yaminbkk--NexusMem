@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SCENARIOS } from './scenario.js';
+import { collectInjections, type TranscriptEntry } from './transcript-injections.js';
 
 /**
  * Recomputes the injection-derived fields of an already-collected eval run
@@ -16,10 +17,9 @@ import { SCENARIOS } from './scenario.js';
  * alone, so it reported recall firing 0/9 in this rerun's first pass when it
  * had actually fired in 2/9 -- invisible only to the analysis, not absent
  * from the transcripts, which is why this replays the same saved data rather
- * than re-running any trial. `scripts/eval-ambient.ts` cannot be imported
- * here to share the fixed function directly: it auto-runs a live eval as a
- * module-level side effect, so `extractHookInjection` below is a deliberate,
- * kept-in-sync-by-hand duplicate of the one now in that file.
+ * than re-running any trial. Both this script and the live reader collect
+ * injections through `collectInjections`, so a replay counts what a live run
+ * counted.
  *
  * Usage: npx tsx eval/ambient/reanalyse-transcripts.ts <resultsJsonPath> <transcriptSearchDir...>
  * Overwrites <resultsJsonPath> in place; the original is not touched unless
@@ -28,21 +28,6 @@ import { SCENARIOS } from './scenario.js';
 
 const UNRELATED_COMMANDS = ['npm run lint', 'npm run typecheck'];
 const bullets = (text: string): string[] => text.split(/\r?\n/).filter((l) => l.trimStart().startsWith('- '));
-
-function extractHookInjection(hook: { type?: string; content?: unknown; stdout?: unknown }): string | null {
-  if (!hook.type?.startsWith('hook')) return null;
-  if (typeof hook.content === 'string' && hook.content.includes('NexusMem:')) return hook.content;
-  if (typeof hook.stdout === 'string') {
-    try {
-      const parsed = JSON.parse(hook.stdout) as { hookSpecificOutput?: { additionalContext?: unknown } };
-      const ctx = parsed.hookSpecificOutput?.additionalContext;
-      if (typeof ctx === 'string' && ctx.includes('NexusMem:')) return ctx;
-    } catch {
-      // stdout wasn't JSON -- SessionStart's plain-text form is already handled above.
-    }
-  }
-  return null;
-}
 
 interface Row {
   scenario: string;
@@ -75,19 +60,16 @@ function recompute(row: Row, transcriptPath: string): Row {
   const scenario = SCENARIOS.find((s) => s.name === row.scenario);
   if (!scenario) throw new Error(`unknown scenario in results.json: ${row.scenario}`);
 
-  const injections: string[] = [];
+  const entries: TranscriptEntry[] = [];
   for (const line of readFileSync(transcriptPath, 'utf8').split(/\r?\n/)) {
     if (!line.trim()) continue;
-    let entry: { attachment?: { type?: string; content?: unknown; stdout?: unknown } };
     try {
-      entry = JSON.parse(line);
+      entries.push(JSON.parse(line) as TranscriptEntry);
     } catch {
       continue;
     }
-    if (!entry.attachment) continue;
-    const text = extractHookInjection(entry.attachment);
-    if (text) injections.push(text);
   }
+  const injections = collectInjections(entries);
 
   const injectedChars = injections.reduce((sum, i) => sum + i.length, 0);
   const items = injections.flatMap(bullets);

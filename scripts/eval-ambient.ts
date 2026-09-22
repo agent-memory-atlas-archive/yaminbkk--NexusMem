@@ -6,6 +6,7 @@ import { redactAgentEvent } from '../src/agent/event.js';
 import { MAX_DIGEST_CHARS, MAX_RECALL_CHARS } from '../src/agent/recall.js';
 import { repoRelative } from '../eval/ambient/paths.js';
 import { revertsDayOneFix, SCENARIOS, type Scenario } from '../eval/ambient/scenario.js';
+import { collectInjections, type TranscriptEntry } from '../eval/ambient/transcript-injections.js';
 
 /**
  * Does ambient memory change what the agent does?
@@ -443,41 +444,12 @@ function transcriptPath(sessionId: string): string | null {
   return null;
 }
 
-/**
- * A hook's output does not arrive as one consistent shape. `SessionStart`
- * prints plain text (`runAgentSessionStart`'s own doc comment: "not JSON --
- * that is the injection form the live probe verified for SessionStart"), and
- * Claude Code records that directly in the attachment's `content` field.
- * `PostToolUse`/`PostToolUseFailure` recall instead prints a JSON envelope
- * (`{"hookSpecificOutput":{"additionalContext":"..."}}`) -- and Claude Code
- * leaves `content` EMPTY for that shape, putting the raw stdout in `stdout`
- * instead. Found live, after the first analysis of this rerun's own data
- * reported recall firing 0/9: it had fired in 2/9, invisible only because
- * this function checked `content` alone. `verify-preflight.ts` never had
- * this bug -- it reads `agent recall`'s own CLI stdout directly, never a
- * Claude Code transcript.
- */
-function extractHookInjection(hook: { type?: string; content?: unknown; stdout?: unknown }): string | null {
-  if (!hook.type?.startsWith('hook')) return null;
-  if (typeof hook.content === 'string' && hook.content.includes('NexusMem:')) return hook.content;
-  if (typeof hook.stdout === 'string') {
-    try {
-      const parsed = JSON.parse(hook.stdout) as { hookSpecificOutput?: { additionalContext?: unknown } };
-      const ctx = parsed.hookSpecificOutput?.additionalContext;
-      if (typeof ctx === 'string' && ctx.includes('NexusMem:')) return ctx;
-    } catch {
-      // stdout wasn't JSON -- SessionStart's plain-text form is already
-      // handled by the `content` check above, so this genuinely has nothing.
-    }
-  }
-  return null;
-}
-
 /** Reads the session transcript for what the model actually did and was shown. */
 function readTranscript(path: string, repoDir: string): Transcript {
   const t: Transcript = { ...EMPTY_TRANSCRIPT, editedFiles: [], editIndex: new Map(), editMs: new Map(), injections: [] };
   const shorten = (v: unknown) => String(v ?? '').replace(/\s+/g, ' ').slice(0, 90);
   let startedAt: number | null = null;
+  const entries: TranscriptEntry[] = [];
 
   for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -495,10 +467,7 @@ function readTranscript(path: string, repoDir: string): Transcript {
     const at = entry.timestamp ? Date.parse(entry.timestamp) : null;
     if (at !== null && startedAt === null) startedAt = at;
 
-    if (entry.attachment) {
-      const text = extractHookInjection(entry.attachment);
-      if (text) t.injections.push(text);
-    }
+    entries.push(entry);
 
     const content = entry.message?.content;
     if (!Array.isArray(content)) continue;
@@ -526,18 +495,13 @@ function readTranscript(path: string, repoDir: string): Transcript {
       } else if (block.type === 'tool_result') {
         if (block.is_error === true) t.failedToolCalls += 1;
       } else if (block.type === 'text') {
-        const text = String(block.text ?? '');
-        // Injections arrive as user-role text; anything the assistant says
-        // about NexusMem is the model noticing, not the hook speaking.
-        if (text.includes('NexusMem:')) {
-          if (entry.message?.role === 'assistant') t.noticedNexusMem = true;
-          else for (const match of text.matchAll(/NexusMem:[\s\S]{0,1500}/g)) t.injections.push(match[0]);
-        } else if (entry.message?.role === 'assistant' && /nexusmem/i.test(text)) {
-          t.noticedNexusMem = true;
-        }
+        // Anything the assistant says about NexusMem is the model noticing,
+        // not the hook speaking; injections are collected below.
+        if (entry.message?.role === 'assistant' && /nexusmem/i.test(String(block.text ?? ''))) t.noticedNexusMem = true;
       }
     }
   }
+  t.injections = collectInjections(entries);
   return t;
 }
 
