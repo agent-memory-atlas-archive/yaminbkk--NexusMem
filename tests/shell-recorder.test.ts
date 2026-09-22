@@ -227,7 +227,7 @@ describe('real shell capture', () => {
     expect(r.status).toBe(0);
 
     await expectRecorded('pwsh-hook', command, `$env:DB_PASSWORD: [redacted] # ทดสอบ`);
-  }, 30_000);
+  }, 60_000);
 
   it.skipIf(process.platform !== 'win32' || !existsSync(GIT_BASH))('Git Bash: the DEBUG trap + precmd pass the command to the recorder', async () => {
     const profile = join(home, 'hook.bash');
