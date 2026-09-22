@@ -165,9 +165,11 @@ function buildFailedAgainProject(scenario: Scenario): Fixture {
 
 /**
  * A second, unrelated project: same bare command, own repo, own database
- * (`<repoRoot>/.nexusmem/memory.db` is a separate file per repo, so this is
- * really checking that the query is scoped correctly, not that the files
- * happen not to collide). Exists only for check C's cross-project half.
+ * (`<repoRoot>/.nexusmem/memory.db` is a separate file per repo). Exists only
+ * for check C's cross-project half, which proves the installed hooks keep two
+ * real projects apart end to end. Two databases cannot show whether the recall
+ * query itself is scoped by `project_id`; that is pinned with both projects in
+ * one database in `tests/agent-recall.test.ts`.
  */
 function buildUnrelatedProject(scenario: Scenario): Fixture {
   const workspace = realpathSync.native(mkdtempSync(join(tmpdir(), 'nexusmem-preflight-other-')));
@@ -275,8 +277,9 @@ function verify(scenario: Scenario): string[] {
     // A second project, own repo and own `.nexusmem/memory.db`, seeded with
     // one failure of the exact same bare command text (so `execHash` -- which
     // is computed from command text alone, not from cwd -- is identical
-    // across the two). Isolation has to come from the query being scoped by
-    // `project_id`, not from the hash happening to differ.
+    // across the two). Isolation here cannot come from the hash happening to
+    // differ; the `project_id` scoping of the query is tested in one database
+    // in `tests/agent-recall.test.ts`.
     other = buildUnrelatedProject(scenario);
     const otherEnv = { ...process.env, NEXUSMEM_HOME: other.nmHome };
     const crossProject = recall(failurePayload(other.dir, scenario.command, errorText), other.dir, otherEnv);

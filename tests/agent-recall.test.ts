@@ -76,6 +76,30 @@ describe('recallFailure', () => {
     expect(recallFailure(store, 'someone-else', HASH('npm test'))).toBeNull();
   });
 
+  it('counts only its own failures when two projects share one database and one execution', () => {
+    seedDayOne();
+    const other = 'proj-other';
+    store.upsertNodes(
+      collectAgentEvents(
+        [
+          event({ sessionId: 'sess-other', kind: 'edit', filePath: `${ROOT}/lib/z.ts`, outcome: 'ok', exitCode: null, ts: at(30) }),
+          event({ sessionId: 'sess-other', command: 'npm test', ts: at(31) }),
+        ],
+        other,
+        { repoRoot: ROOT },
+      ),
+    );
+
+    const own = recallFailure(store, PROJECT, HASH('npm test'))!;
+    expect(own.matched).toBe(2);
+    expect(own.text).not.toContain('lib/z.ts');
+
+    const theirs = recallFailure(store, other, HASH('npm test'))!;
+    expect(theirs.matched).toBe(1);
+    expect(theirs.text).toContain('lib/z.ts');
+    for (const file of ['src/a.ts', 'src/b.ts', 'src/c.ts']) expect(theirs.text).not.toContain(file);
+  });
+
   it('reports past failures with the files that were edited before each', () => {
     seedDayOne();
     const recall = recallFailure(store, PROJECT, HASH('npm test'))!;
