@@ -130,6 +130,12 @@ describe('F4 changed-file accounting', () => {
     expect(parseChangedFiles(porcelain)).toEqual(['config/zz.json', 'new.js', 'old.js', 'orig.js', 'src/a.js']);
   });
 
+  it('keeps a POSIX backslash as part of the name, so it is neither merged nor mistaken for harness state', () => {
+    const porcelain = ['?? a\\b', '?? a/b', '?? .git\\file', ''].join('\0');
+    expect(parseChangedFiles(porcelain, 'linux')).toEqual(['.git\\file', 'a/b', 'a\\b']);
+    expect(parseChangedFiles(porcelain, 'win32')).toEqual(['a/b']);
+  });
+
   it('sees a newly created solution file that git diff alone misses', () => {
     const dir = mkdtempSync(join(tmpdir(), 'nexusmem-v2-changed-'));
     try {

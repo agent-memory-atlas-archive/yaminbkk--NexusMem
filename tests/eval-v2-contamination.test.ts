@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -8,6 +8,7 @@ import { preflightArm, setUpArm } from '../eval/ambient-v2/run.js';
 import { V2_SCENARIOS } from '../eval/ambient-v2/scenario.js';
 import { logicalState, stateDiff } from '../eval/ambient-v2/state.js';
 import { verifyDelivery } from '../eval/ambient-v2/verify-delivery.js';
+import { gitFixture } from './helpers.js';
 
 /**
  * F3: the model must start from the seeded experiment state, never from one
@@ -109,4 +110,26 @@ describe('F3 pre-flight never changes the trial state', () => {
     },
     HEAVY,
   );
+});
+
+describe('logical state keys on a POSIX filesystem', () => {
+  it.skipIf(process.platform === 'win32')('keeps `a\\b` and `a/b` as two files, and does not skip `.git\\file` as git internals', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'nexusmem-v2-state-sep-'));
+    const home = mkdtempSync(join(tmpdir(), 'nexusmem-v2-state-home-'));
+    try {
+      gitFixture(repo, ['init', '-q', '-b', 'main']);
+      gitFixture(repo, ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'root']);
+      mkdirSync(join(repo, 'a'));
+      writeFileSync(join(repo, 'a', 'b'), 'slash\n');
+      writeFileSync(join(repo, 'a\\b'), 'backslash\n');
+      writeFileSync(join(repo, '.git\\file'), 'not git internals\n');
+
+      const tree = logicalState(repo, home).tree;
+      expect(Object.keys(tree).sort()).toEqual(['.git\\file', 'a/b', 'a\\b']);
+      expect(tree['a/b']).not.toBe(tree['a\\b']);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

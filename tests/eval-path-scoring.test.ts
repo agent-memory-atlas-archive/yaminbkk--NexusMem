@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { repoRelative, toNativePath } from '../eval/ambient/paths.js';
+import { forwardSlashed, repoRelative, toNativePath } from '../eval/ambient/paths.js';
 
 /**
  * Harness-only scoring. The Phase-5 eval recorded one ambient run as having
@@ -87,5 +87,14 @@ describe('repoRelative', () => {
   it('a file genuinely outside the repository does not become a repo-relative path', () => {
     const repo = 'C:\\Users\\dev\\app';
     expect(repoRelative(repo, '/c/Users/dev/other/src/parse.js', 'win32')).toBe('../other/src/parse.js');
+  });
+});
+
+describe('forwardSlashed', () => {
+  it('rewrites the separator on win32 only', () => {
+    expect(forwardSlashed('config\\site.json', 'win32')).toBe('config/site.json');
+    expect(forwardSlashed('config\\site.json', 'linux')).toBe('config\\site.json');
+    expect(forwardSlashed('config\\site.json', 'darwin')).toBe('config\\site.json');
+    expect(forwardSlashed('config/site.json', 'linux')).toBe('config/site.json');
   });
 });

@@ -36,6 +36,15 @@ export function toNativePath(filePath: string, platform: NodeJS.Platform = proce
 }
 
 /**
+ * A host-relative path spelled with forward slashes. Only win32 separates on
+ * `\`; on POSIX it is an ordinary filename character, so `a\b` and `a/b` are
+ * two files and must stay two keys.
+ */
+export function forwardSlashed(rel: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? rel.split('\\').join('/') : rel;
+}
+
+/**
  * Repo-relative, forward slashes -- the form every scenario states its files
  * in. `platform` is a parameter rather than read from the environment so the
  * win32 path rules can be exercised from any host.

@@ -29,11 +29,11 @@ describe('harder-eval fingerprints', () => {
       fixtures: 'd5413b3962ba02e9',
       prompts: '3e99b2e63764ab08',
       scorer: '0dc30aa6891c060d',
-      runner: '3ce507e220d3e736',
+      runner: 'fee9b04f746b7b4f',
       delivery: '5873effb5577d368',
-      isolation: 'efc01be13b7feb9d',
+      isolation: 'a547766019aea912',
       order: '07eb683962cbfa21',
-      design: 'd51fcec6f6a5ae9b',
+      design: '8fe65d0a668fbffc',
     });
   });
 

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { forwardSlashed } from '../ambient/paths.js';
 
 /**
  * What a run changed in the working tree, for the trial record.
@@ -23,21 +24,21 @@ const owned = (path: string): boolean => path === '.git' || HARNESS_OWNED.some((
  * came from, which is consumed rather than read as an entry of its own. Both
  * sides of a rename are reported: the old path was changed away too.
  */
-export function parseChangedFiles(porcelainZ: string): string[] {
+export function parseChangedFiles(porcelainZ: string, platform: NodeJS.Platform = process.platform): string[] {
   const fields = porcelainZ.split('\0');
   const out = new Set<string>();
   for (let i = 0; i < fields.length; i += 1) {
     const entry = fields[i]!;
     if (entry.length < 4) continue;
     const status = entry.slice(0, 2);
-    out.add(entry.slice(3));
+    out.add(forwardSlashed(entry.slice(3), platform));
     if (status.includes('R') || status.includes('C')) {
       const from = fields[i + 1];
-      if (from) out.add(from);
+      if (from) out.add(forwardSlashed(from, platform));
       i += 1;
     }
   }
-  return [...out].map((p) => p.split('\\').join('/')).filter((p) => !owned(p)).sort();
+  return [...out].filter((p) => !owned(p)).sort();
 }
 
 export function changedFiles(repoDir: string): string[] {

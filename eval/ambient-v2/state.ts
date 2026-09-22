@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { forwardSlashed } from '../ambient/paths.js';
 
 /**
  * The logical state a model trial starts from, so that anything written into
@@ -31,13 +32,12 @@ export interface LogicalState {
 }
 
 const hash = (b: Buffer): string => createHash('sha256').update(b).digest('hex').slice(0, 16);
-const posixRel = (p: string): string => p.split('\\').join('/');
 
-function fileHashes(dir: string, skip: (rel: string) => boolean): Record<string, string> {
+function fileHashes(dir: string, skip: (rel: string) => boolean, platform: NodeJS.Platform): Record<string, string> {
   const out: Record<string, string> = {};
   if (!existsSync(dir)) return out;
   for (const entry of readdirSync(dir, { recursive: true, encoding: 'utf8' })) {
-    const rel = posixRel(entry);
+    const rel = forwardSlashed(entry, platform);
     if (skip(rel)) continue;
     const path = join(dir, entry);
     if (statSync(path).isFile()) out[rel] = hash(readFileSync(path));
@@ -71,11 +71,11 @@ export function dumpDatabase(path: string): Record<string, string[]> {
 /** The database files themselves are read logically above; their bytes would only add WAL noise. */
 const DB_FILE = /^\.nexusmem\/memory\.db(-wal|-shm|-journal)?$/;
 
-export function logicalState(repoDir: string, nmHome: string): LogicalState {
+export function logicalState(repoDir: string, nmHome: string, platform: NodeJS.Platform = process.platform): LogicalState {
   return {
     db: dumpDatabase(join(repoDir, '.nexusmem', 'memory.db')),
-    home: fileHashes(nmHome, () => false),
-    tree: fileHashes(repoDir, (rel) => rel === '.git' || rel.startsWith('.git/') || DB_FILE.test(rel)),
+    home: fileHashes(nmHome, () => false, platform),
+    tree: fileHashes(repoDir, (rel) => rel === '.git' || rel.startsWith('.git/') || DB_FILE.test(rel), platform),
     head: execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
     status: execFileSync('git', ['-C', repoDir, 'status', '--porcelain', '-uall'], { encoding: 'utf8' }).trim(),
   };
